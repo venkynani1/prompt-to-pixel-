@@ -49,30 +49,29 @@ async function main() {
   const host = new Jar(base);
   await host.call('/api/host/login', { method: 'POST', json: { password: 'host-pass-1' } });
   const ov = await host.call(`/api/events/${code}/host/overview`);
-  const pins: Record<number, string> = Object.fromEntries(ov.teams.map((t: any) => [t.team_no, t.pin_plain]));
   const pk = ov.event.projectorKey;
 
-  const pinPage = await page(1100, 900);
-  await pinPage.goto(`${base}/host/${code}/pins`, { waitUntil: 'networkidle0' });
-  await shot(pinPage, '24-pin-slips');
-
-  // phone: bare link → join → name
+  // phone: bare link → pick a free number → name + own PIN
   const phone = await page(390, 844, true);
+  const early = new Jar(base);
+  for (const [no, nm] of [[4, 'Byte Me'], [7, 'Pixel Pushers']] as const) await new Jar(base).call(`/api/events/${code}/claim`, { method: 'POST', json: { teamNo: no, pin: '4826', name: nm } });
+  void early;
   await phone.goto(base, { waitUntil: 'networkidle0' });
-  await sleep(800);
-  await phone.type('#no', '1'); await phone.type('#pin', pins[1]);
-  await shot(phone, '01-join');
-  await phone.click('button.btn'); await phone.waitForFunction(() => location.pathname.endsWith('/play'), { timeout: 20000 });
-  await shot(phone, '02-name-team');
+  await sleep(1200);
+  await shot(phone, '01-pick-team');
+  const free = await phone.$$('ul button');
+  await free[0].click(); await sleep(400);
   await phone.type('input', 'Glitch Gurus');
-  await phone.click('button.btn'); await sleep(1500);
-
+  const pinInputs = await phone.$$('input[inputmode="numeric"]');
+  await pinInputs[0].type('5937'); await pinInputs[1].type('5937');
+  await shot(phone, '02-claim-team');
+  await phone.click('button.btn'); await phone.waitForFunction(() => location.pathname.endsWith('/play'), { timeout: 20000 });
+  await sleep(1200);
   const names = ['Render Rangers', 'Prompt Pirates', 'Latent Legends', 'Diffusion Divas', 'Token Titans', 'Neural Nomads', 'Seed Squad'];
   const teams: Jar[] = [];
   for (let i = 0; i < names.length; i++) {
     const j = new Jar(base);
-    await j.call(`/api/events/${code}/join`, { method: 'POST', json: { teamNo: i + 2, pin: pins[i + 2] } });
-    await j.call(`/api/events/${code}/team-name`, { method: 'POST', json: { name: names[i] } });
+    await j.call(`/api/events/${code}/claim`, { method: 'POST', json: { teamNo: [2, 3, 5, 6, 8, 9, 11][i], pin: '4826', name: names[i] } });
     teams.push(j);
   }
   const screen = await page(1920, 1080);

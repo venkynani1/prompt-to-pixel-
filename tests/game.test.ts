@@ -13,14 +13,14 @@ async function startShow(h: H, teams = 3) {
   expect(st.status).toBe(200);
   const code = st.body.code as string;
   const ov = await host.json(`/api/events/${code}/host/overview`);
-  return { host, code, pins: ov.body.teams.map((t: any) => ({ no: t.team_no, pin: t.pin_plain, id: t.id })) };
+  return { host, code, pins: ov.body.teams.map((t: any) => ({ no: t.team_no, pin: '4826', id: t.id })) };
 }
 
+/** Scan → pick a free number → name + own PIN (BID WARS style). */
 async function joinAs(h: H, code: string, no: number, pin: string, name?: string) {
   const c = h.client();
-  const r = await c.json(`/api/events/${code}/join`, { method: 'POST', json: { teamNo: no, pin } });
+  const r = await c.json(`/api/events/${code}/claim`, { method: 'POST', json: { teamNo: no, pin, name: name ?? `Team ${no}` } });
   expect(r.status).toBe(200);
-  if (name) expect((await c.json(`/api/events/${code}/team-name`, { method: 'POST', json: { name } })).status).toBe(200);
   return c;
 }
 
@@ -34,7 +34,7 @@ describe('the show: QR join → spins → auto judging → reveal → final', ()
     const h = await makeHarness();
     const { host, code, pins } = await startShow(h, 3);
     expect(pins).toHaveLength(3);
-    expect(pins.every((p: any) => /^\d{4}$/.test(p.pin))).toBe(true);
+    expect((await h.client().json(`/api/events/${code}/slots`)).body.slots.map((x: any) => x.taken)).toEqual([false, false, false]);
 
     expect((await h.client().json('/api/host/start', { method: 'POST', json: { name: 'x1', password: 'whatever1' } })).status).toBe(401);
     expect((await h.client().json('/api/host/login', { method: 'POST', json: { password: 'secret-host' } })).status).toBe(200);
@@ -42,6 +42,13 @@ describe('the show: QR join → spins → auto judging → reveal → final', ()
 
     const a = await joinAs(h, code, 1, pins[0].pin, 'Pixel Pirates');
     const b = await joinAs(h, code, 2, pins[1].pin, 'Neon Ninjas');
+    expect((await h.client().json(`/api/events/${code}/claim`, { method: 'POST', json: { teamNo: 1, pin: '5937', name: 'Thieves' } })).status).toBe(409);
+    expect((await h.client().json(`/api/events/${code}/claim`, { method: 'POST', json: { teamNo: 3, pin: '1111', name: 'Weak pin' } })).status).toBe(400);
+    expect((await h.client().json(`/api/events/${code}/join`, { method: 'POST', json: { teamNo: 3, pin: '4826' } })).status).toBe(409);
+    const teammate = h.client();
+    expect((await teammate.json(`/api/events/${code}/join`, { method: 'POST', json: { teamNo: 1, pin: pins[0].pin } })).status).toBe(200);
+    expect((await teammate.json(`/api/events/${code}/state`)).body.me.name).toBe('Pixel Pirates');
+    expect((await h.client().json(`/api/events/${code}/slots`)).body.slots.map((x: any) => [x.no, x.taken, x.name])).toEqual([[1, true, 'Pixel Pirates'], [2, true, 'Neon Ninjas'], [3, false, null]]);
     let st = await h.client().json(`/api/events/${code}/state`);
     expect(st.body.event.teamCount).toBe(2);
     expect(st.body.teams.filter((t: any) => t.joined).map((t: any) => t.name)).toEqual(['Pixel Pirates', 'Neon Ninjas']);
@@ -281,6 +288,7 @@ describe('auth & privacy', () => {
   it('team PIN lockout, PIN reset, host-only routes, wrong host password', async () => {
     const h = await makeHarness();
     const { host, code, pins } = await startShow(h, 1);
+    await joinAs(h, code, 1, pins[0].pin);
     const x = h.client();
     for (let i = 0; i < 5; i++) expect((await x.json(`/api/events/${code}/join`, { method: 'POST', json: { teamNo: 1, pin: '0000' } })).status).toBe(401);
     expect((await x.json(`/api/events/${code}/join`, { method: 'POST', json: { teamNo: 1, pin: pins[0].pin } })).status).toBe(429);
@@ -321,5 +329,19 @@ describe('auth & privacy', () => {
     const rows = await h.db.query(`SELECT backend, data IS NULL AS no_bytes FROM images`);
     expect(rows.every((r: any) => r.backend === 'neon-s3' && r.no_bytes)).toBe(true);
     expect(h.objects.size).toBe(4); // scene judge copy + full, judge and thumb of the upload
+  });
+});
+
+describe('BID WARS-style claiming', () => {
+  it('two phones racing for the same free number: exactly one wins', async () => {
+    const h = await makeHarness();
+    const { code } = await startShow(h, 2);
+    const results = await Promise.all([
+      h.client().json(`/api/events/${code}/claim`, { method: 'POST', json: { teamNo: 1, pin: '4826', name: 'First' } }),
+      h.client().json(`/api/events/${code}/claim`, { method: 'POST', json: { teamNo: 1, pin: '5937', name: 'Second' } }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+    const st = (await h.client().json(`/api/events/${code}/slots`)).body.slots;
+    expect(st[0].taken).toBe(true);
   });
 });

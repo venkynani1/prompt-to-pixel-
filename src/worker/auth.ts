@@ -104,9 +104,10 @@ export async function loginTeam(ctx: AppContext, eventId: string, rawName: strin
 /** Join with a host-issued team number + PIN (BID WARS style). Marks the team as joined. */
 export async function joinTeam(ctx: AppContext, eventId: string, teamNo: number, pin: string) {
   const [row] = await ctx.db.query<any>(
-    `SELECT t.id, t.name, t.named, t.disabled, c.pin_hash, c.failed_attempts, (c.locked_until > now()) AS locked
+    `SELECT t.id, t.name, t.named, t.disabled, (t.joined_at IS NOT NULL) AS joined, c.pin_hash, c.failed_attempts, (c.locked_until > now()) AS locked
      FROM teams t JOIN team_credentials c ON c.team_id=t.id WHERE t.event_id=$1 AND t.team_no=$2`, [eventId, teamNo]);
   if (!row || row.disabled) throw new HttpError(401, 'Team number or PIN is wrong');
+  if (!row.joined) throw new HttpError(409, 'Nobody has taken this team yet — tap it to claim it');
   if (row.locked) throw new HttpError(429, 'Too many wrong PINs — wait a minute or ask the host');
   if (!(await verifySecret(pin, row.pin_hash))) {
     const fails = row.failed_attempts + 1;

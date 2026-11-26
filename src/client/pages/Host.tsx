@@ -36,7 +36,7 @@ export function HostLogin() {
         <label className="grid gap-2"><span className="font-bold">Host password</span><input className="field" type="password" value={setup.password} minLength={6} onChange={(e) => setSetup({ ...setup, password: e.target.value })} required />
           <span className="text-sm text-muted">You'll use this to open this console. At least 6 characters.</span></label>
         <label className="grid gap-2"><span className="font-bold">How many teams?</span><input className="field" type="number" min={1} max={120} value={setup.teams} onChange={(e) => setSetup({ ...setup, teams: Number(e.target.value) })} />
-          <span className="text-sm text-muted">Each team gets a number and a 4-digit PIN to print. You can add more later.</span></label>
+          <span className="text-sm text-muted">Teams pick a free number when they scan the QR code and make up their own PIN. You can add more numbers later.</span></label>
         {msg && <Notice kind="error">{msg}</Notice>}
         <button className="btn text-lg" disabled={busy || setup.password.length < 6}>{busy ? 'Creating…' : 'Create game'}</button>
       </form>
@@ -116,7 +116,7 @@ export function HostDashboard() {
   const secondary: { label: string; run: () => void }[] = [];
   if (phase === 'lobby') {
     title = 'Registration';
-    detail = <>{joined} of {ov.teams.length} teams have joined. Put the big screen up so teams can scan the QR code.</>;
+    detail = <>{joined} of {ov.teams.length} team numbers taken. Put the big screen up — teams scan the QR code, pick a free number and make up their own PIN.</>;
     primary = { label: 'Start Round 1: spin the wheel', run: () => go('spin1') };
   } else if (st && round) {
     title = round.roundNo === 1 ? `Round 1, scene ${round.seq}` : `Round 2, mashup ${round.seq}`;
@@ -151,7 +151,6 @@ export function HostDashboard() {
         <Wordmark size="sm" />
         <div className="flex flex-wrap gap-2">
           <a className="btn btn-ghost" href={screenUrl} target="_blank" rel="noreferrer">Open big screen</a>
-          <Link className="btn btn-ghost" to={`/host/${code}/pins`} target="_blank">Print team PINs</Link>
         </div>
       </header>
 
@@ -224,18 +223,16 @@ function Teams({ ov, code, act }: { ov: any; code: string; act: Act }) {
         {ov.teams.map((t: any) => (
           <li key={t.id} className={`rounded-xl p-3 text-sm ${t.joined_at ? 'bg-sub-g/15 ring-1 ring-sub-g' : 'bg-panel-2'} ${t.disabled ? 'opacity-40' : ''}`}>
             <p className="display text-2xl font-extrabold">{t.team_no ?? '–'}</p>
-            <p className="font-bold truncate">{t.joined_at ? t.name : 'Not joined'}</p>
-            <p className="text-muted tabular-nums">PIN {t.pin_plain ?? '—'}</p>
-            <button className="underline text-muted" onClick={() => act(async () => {
-              const r = await api(`/api/events/${code}/host/teams/${t.id}/new-pin`, { method: 'POST' });
-              return r;
-            }, `New PIN for team ${t.team_no} is shown on its card.`)}>New PIN</button>
+            <p className="font-bold truncate">{t.joined_at ? t.name : 'Free'}</p>
+            {t.pin_plain && <p className="text-warn tabular-nums">New PIN {t.pin_plain}</p>}
+            {t.joined_at && <button className="underline text-muted" onClick={() => act(() => api(`/api/events/${code}/host/teams/${t.id}/new-pin`, { method: 'POST' }),
+              `Team ${t.team_no} has a new PIN — it's shown on its card. Tell the team.`)}>Forgot PIN?</button>}
           </li>
         ))}
       </ul>
-      <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); act(() => api(`/api/events/${code}/host/teams`, { method: 'POST', json: { count } }), 'Teams added. Print the new PIN slips.'); }}>
+      <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); act(() => api(`/api/events/${code}/host/teams`, { method: 'POST', json: { count } }), 'More team numbers are now free to pick.'); }}>
         <label className="grid gap-1 text-sm">Total teams<input type="number" min={1} max={120} className="field w-32" value={count} onChange={(e) => setCount(Number(e.target.value))} /></label>
-        <button className="btn btn-ghost">Add teams</button>
+        <button className="btn btn-ghost">Add team numbers</button>
       </form>
     </Panel>
   );

@@ -7,7 +7,7 @@ A two-round AI image challenge for corporate events. Teams write prompts in any 
 | 1 · Scene Recall | A wheel picks one of 12 original movie scenes. It shows for ~8 s, then hides. Teams recreate it from memory with any AI image generator (4–5 min). Spin as many scenes as you like. | composition 25, subject 25, colour & lighting 20, style 15, detail 15 |
 | 2 · Movie Mashup | Three reels pick a genre, a hero and a setting. Teams design that movie's poster. | each pick 15 × 3, fusion 20, creativity 15, visual quality 20 |
 
-Teams join by scanning one QR code and entering the team number + PIN from a printed slip (BID WARS style). The host console is one big "next step" button.
+Teams join BID WARS style: scan one QR code, tap a free team number, name the team and make up their own PIN (teammates join with that PIN). The host console is one big "next step" button.
 
 The rules are a **draft** (see `src/shared/rubrics.ts`), written from scratch — review them with the organisers.
 

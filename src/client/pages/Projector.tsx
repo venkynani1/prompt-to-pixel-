@@ -43,7 +43,7 @@ export function Projector() {
             <div className="grid lg:grid-cols-[auto_1fr] items-center gap-[5vw]">
               <div className="grid justify-items-center gap-4">
                 {qr && <img src={qr} alt={`QR code to join: ${joinUrl}`} className="w-[min(30vw,480px)] rounded-3xl" />}
-                <p className="text-2xl text-muted">Scan, then enter your team number and PIN</p>
+                <p className="text-2xl text-muted">Scan, pick a free team number, make up a PIN</p>
               </div>
               <div className="grid gap-6">
                 <h1 className="text-[clamp(3rem,6vw,6rem)] font-extrabold">Join the game</h1>
@@ -51,7 +51,7 @@ export function Projector() {
                 <ul className="flex flex-wrap gap-3">
                   {(state.teams ?? []).map((t, i) => (
                     <li key={i} className={`rounded-xl px-4 py-2 text-xl font-bold transition-colors duration-500 ${t.joined ? 'bg-sub-g text-dusk' : 'bg-panel text-muted'}`}>
-                      {t.no ? <span className="tabular-nums mr-2 opacity-70">{t.no}</span> : null}{t.joined ? t.name : 'waiting'}
+                      {t.no ? <span className="tabular-nums mr-2 opacity-70">{t.no}</span> : null}{t.joined ? t.name : 'free'}
                     </li>
                   ))}
                 </ul>

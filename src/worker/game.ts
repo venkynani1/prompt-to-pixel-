@@ -161,15 +161,38 @@ export async function ensureTeams(ctx: AppContext, eventId: string, count: numbe
   const stmts: { text: string; params: unknown[] }[] = [];
   for (let n = 1; n <= count; n++) {
     if (have.has(n)) continue;
-    const id = crypto.randomUUID(), pin = randomPin();
+    const id = crypto.randomUUID();
     stmts.push({ text: `INSERT INTO teams(id,event_id,name,name_key,anon_label,team_no,named) VALUES($1,$2,$3,$4,$5,$6,false)`,
       params: [id, eventId, `Team ${n}`, `team ${n}`, `Entry ${n}`, n] });
-    stmts.push({ text: `INSERT INTO team_credentials(team_id,pin_hash,pin_plain) VALUES($1,$2,$3)`, params: [id, await fastHash(pin), pin] });
+    // unclaimed slot: an unguessable placeholder until the team claims it and sets its own PIN
+    stmts.push({ text: `INSERT INTO team_credentials(team_id,pin_hash) VALUES($1,$2)`, params: [id, await fastHash(toHex(crypto.getRandomValues(new Uint8Array(16))))] });
   }
   if (stmts.length) await ctx.db.batch([...stmts, { text: `UPDATE events SET state_version=state_version+1 WHERE id=$1`, params: [eventId] }]);
   await audit(ctx, eventId, 'host', 'teams_created', { count, added: stmts.length / 2 });
 }
 
+/** Teams pick a free number and set their own PIN + name (BID WARS style). Atomic: two phones can't claim the same slot. */
+export async function claimTeam(ctx: AppContext, event: { id: string; registration_open: boolean }, teamNo: number, pin: string, rawName: string) {
+  if (!/^\d{4}$/.test(pin) || /^(\d)\1{3}$/.test(pin)) throw new HttpError(400, 'Choose a 4-digit PIN that is not all the same digit');
+  const name = rawName.normalize('NFKC').replace(/\s+/g, ' ').trim();
+  if (name.length < 2 || name.length > 32) throw new HttpError(400, 'Team name must be 2–32 characters');
+  const [t] = await ctx.db.query<any>(`SELECT id, joined_at, disabled FROM teams WHERE event_id=$1 AND team_no=$2`, [event.id, teamNo]);
+  if (!t || t.disabled) throw new HttpError(404, 'No such team number');
+  if (t.joined_at) throw new HttpError(409, 'That team is already taken. If it is yours, log in with your PIN.');
+  const clash = await ctx.db.query(`SELECT 1 FROM teams WHERE event_id=$1 AND name_key=$2 AND id<>$3`, [event.id, name.toLowerCase(), t.id]);
+  if (clash.length) throw new HttpError(409, 'Another team already has that name');
+  const claimed = await ctx.db.query(
+    `UPDATE teams SET joined_at=now(), name=$2, name_key=$3, named=true WHERE id=$1 AND joined_at IS NULL RETURNING id`, [t.id, name, name.toLowerCase()]);
+  if (!claimed.length) throw new HttpError(409, 'Someone just took that team number — pick another');
+  await ctx.db.batch([
+    { text: `UPDATE team_credentials SET pin_hash=$2, pin_plain=NULL, failed_attempts=0, locked_until=NULL WHERE team_id=$1`, params: [t.id, await fastHash(pin)] },
+    { text: `UPDATE events SET state_version=state_version+1 WHERE id=$1`, params: [event.id] },
+  ]);
+  await audit(ctx, event.id, `team:${t.id}`, 'team_claimed', { teamNo, name });
+  return { teamId: t.id as string, name };
+}
+
+/** Host fallback when a team forgets its PIN: sets a new one and shows it to the host. */
 export async function newPinFor(ctx: AppContext, eventId: string, teamId: string) {
   const pin = randomPin();
   await ctx.db.batch([

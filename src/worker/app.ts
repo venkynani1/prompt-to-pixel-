@@ -10,7 +10,7 @@ import type { AppContext } from './context';
 import { detectImageType, hashSecret, randomToken, safeEqual, sha256Hex } from './crypto';
 import { aiBudgetAvailable, refreshLeaderboard } from './evaluation';
 import {
-  audit, createSubmission, ensureTeams, hostAction, HttpError, newPinFor, rejudgeRound,
+  audit, claimTeam, createSubmission, ensureTeams, hostAction, HttpError, newPinFor, rejudgeRound,
   requeueSubmission, startEvent,
 } from './game';
 import { buildState, idx } from './state';
@@ -167,6 +167,25 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     const r = await joinTeam(c.get('ctx'), e.id, b.teamNo, b.pin);
     c.header('set-cookie', sessionCookie(TEAM_COOKIE, r.token, secure(c)));
     return c.json({ teamId: r.teamId, name: r.name, named: r.named });
+  });
+
+  /** Free and taken team numbers for the join screen (names of taken teams only). */
+  app.get('/events/:code/slots', async (c) => {
+    const e = await eventByCode(c);
+    const rows = await c.get('ctx').db.query<any>(
+      `SELECT team_no, CASE WHEN joined_at IS NOT NULL THEN name END AS name, joined_at IS NOT NULL AS taken
+       FROM teams WHERE event_id=$1 AND team_no IS NOT NULL AND NOT disabled ORDER BY team_no`, [e.id]);
+    return c.json({ name: e.name, registrationOpen: e.registration_open, slots: rows.map((r) => ({ no: r.team_no, taken: r.taken, name: r.name })) });
+  });
+
+  app.post('/events/:code/claim', async (c) => {
+    const e = await eventByCode(c);
+    const b = await body(c, z.object({ teamNo: z.number().int().min(1).max(200), pin: z.string().max(8), name: z.string().max(64) }));
+    const ctx = c.get('ctx');
+    const r = await claimTeam(ctx, e, b.teamNo, b.pin, b.name);
+    const token = await (await import('./auth')).createSession(ctx, e.id, 'team', r.teamId);
+    c.header('set-cookie', sessionCookie(TEAM_COOKIE, token, secure(c)));
+    return c.json(r);
   });
 
   app.post('/events/:code/team-name', async (c) => {
