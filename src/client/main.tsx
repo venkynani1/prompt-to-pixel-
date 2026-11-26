@@ -8,6 +8,7 @@ import { Play } from './pages/Play';
 import { Projector } from './pages/Projector';
 import { Gallery } from './pages/Gallery';
 import { HostLogin, HostDashboard } from './pages/Host';
+import { Setup } from './pages/Setup';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -18,6 +19,7 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/e/:code/play" element={<Play />} />
         <Route path="/e/:code/gallery" element={<Gallery />} />
         <Route path="/e/:code/screen" element={<Projector />} />
+        <Route path="/setup" element={<Setup />} />
         <Route path="/host" element={<HostLogin />} />
         <Route path="/host/:code" element={<HostDashboard />} />
         <Route path="*" element={<Home />} />

@@ -53,7 +53,14 @@ export function workersAiProvider(env: Env, model: string): JudgeProvider {
       if (req.jsonSchema && info.jsonMode) input.response_format = { type: 'json_schema', json_schema: req.jsonSchema };
       let out: any;
       try {
-        out = await env.AI.run(model as any, input as any);
+        try {
+          out = await env.AI.run(model as any, input as any);
+        } catch (first) {
+          // Meta models need a one-time licence acceptance per account: send "agree" and retry once.
+          if (!/agree|licen[cs]e|5016/i.test(String((first as Error)?.message ?? first))) throw first;
+          await env.AI.run(model as any, { prompt: 'agree' } as any).catch(() => {});
+          out = await env.AI.run(model as any, input as any);
+        }
       } catch (err) {
         const msg = String((err as Error)?.message ?? err);
         if (/3036|daily|allocation|neuron|quota|exceeded your|rate limit|429/i.test(msg)) throw new AiQuotaError(msg);
