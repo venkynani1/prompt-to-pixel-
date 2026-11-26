@@ -25,7 +25,7 @@ export async function migrate(url: string, log = console.log) {
   } finally { await pool.end(); }
 }
 
-if (process.argv[1]?.endsWith('migrate.ts')) {
+if (/(^|[\/])migrate.ts$/.test(process.argv[1] ?? '')) {
   if (!process.env.DATABASE_URL) { console.error('Set DATABASE_URL'); process.exit(1); }
   migrate(process.env.DATABASE_URL).then(() => console.log('migrations complete'), (e) => { console.error(e); process.exit(1); });
 }
