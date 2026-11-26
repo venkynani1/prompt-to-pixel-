@@ -24,6 +24,7 @@ export function HostLogin() {
         <div className="grid gap-2"><label htmlFor="hp" className="font-bold">Host password</label><input id="hp" type="password" className="field" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
         {msg && <Notice kind="error">{msg}</Notice>}
         <button className="btn" disabled={c.length < 4 || !password}>Log in</button>
+        <a href="/setup" className="btn btn-ghost">Create a new event</a>
       </form>
     </Shell>
   );
