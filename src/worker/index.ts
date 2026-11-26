@@ -44,7 +44,9 @@ export default {
 async function health(env: Env): Promise<Response> {
   const out = (status: number, body: object) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
   const raw = env.DATABASE_URL;
-  if (!raw) return out(500, { ok: false, problem: 'DATABASE_URL secret is not set on this Worker (Settings → Variables and Secrets), or it was added without clicking Deploy.' });
+  // names only — never values — so setup mistakes (typos, wrong section) are visible
+  const seen = Object.keys(env).filter((k) => typeof (env as any)[k] === 'string').sort();
+  if (!raw) return out(500, { ok: false, problem: 'DATABASE_URL secret is not set on this Worker (Settings → Variables and Secrets), or it was added without clicking Deploy.', variablesTheWorkerCanSee: seen });
   const v = raw.trim();
   if (/^["']/.test(v)) return out(500, { ok: false, problem: 'DATABASE_URL starts with a quote mark. Paste only the value, without quotes.' });
   if (/^[A-Z_]+=/.test(v)) return out(500, { ok: false, problem: 'DATABASE_URL includes the variable name (e.g. NEON_DATABASE_URL=). Paste only the part starting with postgresql://' });
