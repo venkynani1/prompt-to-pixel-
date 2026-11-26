@@ -19,7 +19,8 @@
     "deploy": "npm run build && wrangler deploy",
     "preview:screens": "npm run build && tsx scripts/preview-screens.ts",
     "local": "npm run build && tsx scripts/local-server.ts",
-    "vercel-build": "tsx scripts/vercel-migrate.ts && vite build"
+    "vercel-build": "tsx scripts/vercel-migrate.ts && vite build",
+    "bank:import": "tsx scripts/import-bank.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.1",

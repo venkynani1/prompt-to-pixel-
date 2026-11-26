@@ -1,21 +1,20 @@
 // Built-in content: original movie-genre scenes (Round 1) and mashup reels (Round 2).
-// Every scene is drawn from scratch by scripts/make-bank.ts — no real films, characters or posters.
+// Round 1 scenes: AI-generated originals supplied by the organiser (bank-src/), processed by scripts/import-bank.ts.
 
 export interface BankScene { id: string; title: string; genre: string }
 
 export const ROUND1_SCENES: BankScene[] = [
-  { id: 'desert-showdown', title: 'Desert Showdown', genre: 'Western' },
-  { id: 'neon-rain', title: 'Neon Rain', genre: 'Cyberpunk noir' },
-  { id: 'twin-moons', title: 'Twin Moons', genre: 'Sci-fi' },
-  { id: 'haunted-hill', title: 'Haunted Hill', genre: 'Horror' },
-  { id: 'storm-ship', title: 'Storm Ship', genre: 'Pirate adventure' },
-  { id: 'lost-temple', title: 'Lost Temple', genre: 'Jungle adventure' },
-  { id: 'monsoon-love', title: 'Monsoon Love', genre: 'Romance' },
-  { id: 'rooftop-hero', title: 'Rooftop Hero', genre: 'Superhero' },
-  { id: 'deep-kingdom', title: 'Deep Kingdom', genre: 'Underwater fantasy' },
-  { id: 'midnight-chase', title: 'Midnight Chase', genre: 'Car chase' },
-  { id: 'dragon-peak', title: 'Dragon Peak', genre: 'Fantasy' },
-  { id: 'lonely-astronaut', title: 'Lonely Astronaut', genre: 'Space drama' },
+  { id: 'chennai-central-dusk', title: 'Chennai Central at Dusk', genre: 'City life' },
+  { id: 'desk-of-ideas', title: 'The Desk of Big Ideas', genre: 'Office drama' },
+  { id: 'film-reel-office', title: 'Film Reel at Sunset', genre: 'Behind the scenes' },
+  { id: 'desert-camp', title: 'Desert Camp', genre: 'Adventure' },
+  { id: 'floating-island', title: 'The Floating Island', genre: 'Fantasy' },
+  { id: 'magic-lamp', title: 'The Magic Lamp', genre: 'Fairy tale' },
+  { id: 'moon-wolf', title: 'Moon Wolf', genre: 'Wilderness' },
+  { id: 'chennai-commute', title: 'The Chennai Commute', genre: 'Office comedy' },
+  { id: 'temple-elephant', title: 'The Temple Elephant', genre: 'Epic' },
+  { id: 'blossom-summit', title: 'Blossom Summit', genre: 'Journey' },
+  { id: 'shore-horse', title: 'Horse on the Shore', genre: 'Drama' },
 ];
 
 export const sceneUrl = (id: string, kind: 'full' | 'judge' | 'thumb') =>
