@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.setup-state.json
+.secrets.tmp.json
+deploy-output.txt
+*.log

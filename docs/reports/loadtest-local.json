@@ -1,0 +1,90 @@
+{
+  "startedAt": "2026-11-26T11:42:12.966Z",
+  "base": "http://localhost:8799",
+  "teams": 100,
+  "submitters": 100,
+  "registration": {
+    "latencyMs": {
+      "n": 100,
+      "p50": 374,
+      "p95": 655,
+      "max": 686,
+      "mean": 403
+    },
+    "errors": [],
+    "errorCount": 0
+  },
+  "imageBytes": {
+    "n": 100,
+    "p50": 622573,
+    "p95": 637374,
+    "max": 641337,
+    "mean": 621775
+  },
+  "uploads": {
+    "latencyMs": {
+      "n": 100,
+      "p50": 2296,
+      "p95": 3250,
+      "max": 3330,
+      "mean": 2330
+    },
+    "errorCount": 0,
+    "errors": [],
+    "burstDurationMs": 3366
+  },
+  "countdownSync": {
+    "devices": 100,
+    "spreadMs": 14
+  },
+  "judging": {
+    "submissions": 100,
+    "scored": 100,
+    "failed": 0,
+    "paused": 0,
+    "held": 0,
+    "msFromBurstToAllDone": 130132,
+    "msFromCloseToAllDone": 126752,
+    "timedOut": false,
+    "neuronsUsedToday": 1758.32,
+    "aiCallsToday": 101,
+    "perEvalLatencyMs": {
+      "n": 100,
+      "p50": 3000,
+      "p95": 3000,
+      "max": 3000,
+      "mean": 3000
+    },
+    "perEvalNeurons": {
+      "n": 100,
+      "p50": 17,
+      "p95": 17,
+      "max": 17,
+      "mean": 17
+    }
+  },
+  "leaderboardPropagation": {
+    "devicesSeenWithin25s": 100,
+    "msToReach": {
+      "n": 100,
+      "p50": 6385,
+      "p95": 9449,
+      "max": 9947,
+      "mean": 5486
+    }
+  },
+  "polling": {
+    "requests": 2083,
+    "notModified": 236,
+    "errors": 0,
+    "latencyMs": {
+      "n": 2083,
+      "p50": 6,
+      "p95": 12,
+      "max": 3300,
+      "mean": 66
+    },
+    "requestsPerDevicePerMinute": 6.96
+  },
+  "finishedAt": "2026-11-26T11:45:27.882Z"
+}

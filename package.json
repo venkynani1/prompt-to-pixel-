@@ -1,0 +1,57 @@
+{
+  "name": "prompt-to-pixel",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Prompt to Pixel \u2014 two-round AI image challenge, fully hosted on Cloudflare Workers + Neon free tiers.",
+  "scripts": {
+    "dev:client": "vite",
+    "dev": "vite build && wrangler dev",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "test": "vitest run",
+    "loadtest:local": "tsx scripts/loadtest-local.ts",
+    "loadtest:remote": "tsx scripts/loadtest-remote.ts",
+    "benchmark": "tsx scripts/benchmark.ts",
+    "bench:images": "tsx scripts/make-bench-images.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "setup": "tsx scripts/setup.ts",
+    "deploy": "npm run build && wrangler deploy",
+    "preview:screens": "npm run build && tsx scripts/preview-screens.ts",
+    "local": "npm run build && tsx scripts/local-server.ts"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.1",
+    "aws4fetch": "^1.0.20",
+    "hono": "^4.13.22",
+    "motion": "^14.14.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.7",
+    "ws": "^8.23.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261125.1",
+    "@electric-sql/pglite": "^0.6.0",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/node": "^26.6.11",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.3.0",
+    "puppeteer-core": "^25.19.0",
+    "sharp": "^0.35.5",
+    "tailwindcss": "^4.3.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.4.0",
+    "vitest": "^5.1.2",
+    "wrangler": "^4.168.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
