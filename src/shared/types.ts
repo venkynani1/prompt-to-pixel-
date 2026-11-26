@@ -26,13 +26,19 @@ export type SubmissionStatus =
   | 'queued' | 'evaluating' | 'scored' | 'needs_review' | 'failed' | 'paused_quota' | 'superseded' | 'rejected';
 
 export interface PublicRound {
+  turnId: string;
   roundNo: 1 | 2;
+  seq: number;
   title: string;
   brief: string;
   durationSec: number;
-  deadlineAt: string | null;
-  referenceImageUrl: string | null;
-  concepts: string[];
+  spinAt: string;          // wheel starts
+  previewFrom: string;     // wheel stops → scene / concepts shown
+  previewUntil: string;    // round 1: scene hidden; uploads open
+  deadlineAt: string;
+  sceneId: string | null;  // round 1 scene (bank id)
+  concepts: string[];      // round 2 [genre, hero, setting]
+  revealed: boolean;
 }
 
 export interface LeaderRow {
@@ -46,6 +52,7 @@ export interface LeaderRow {
 
 export interface MySubmission {
   id: string;
+  turnId: string;
   roundNo: 1 | 2;
   status: SubmissionStatus;
   thumbUrl: string;
@@ -60,8 +67,13 @@ export interface StateResponse {
   serverNow: string;
   pollMs: number;
   event: { code: string; name: string; phase: Phase; registrationOpen: boolean; teamCount: number };
-  round: PublicRound | null;
+  round: PublicRound | null;   // the current (latest) spin
   progress: { submitted: number; scored: number; pending: number; failed: number } | null;
-  leaderboard: LeaderRow[] | null;     // only when revealed (results / final phases)
-  me?: { teamId: string; name: string; submissions: MySubmission[] };
+  leaderboard: LeaderRow[] | null;   // revealed scores only
+  teams?: { no: number | null; name: string; joined: boolean }[];  // lobby roll-call
+  me?: {
+    teamId: string; name: string; teamNo: number | null; named: boolean;
+    current: MySubmission | null;       // my entry for the current spin
+    total: number; rank: number | null;
+  };
 }

@@ -3,18 +3,17 @@ import { z } from 'zod';
 import { MODELS } from './ai/models';
 import { resolveR1Mode } from './ai/judge';
 import {
-  clearCookie, HOST_COOKIE, loginHost, loginTeam, readCookie, registerTeam, revokeSession,
-  sessionCookie, sessionFor, TEAM_COOKIE, validatePin,
+  clearCookie, HOST_COOKIE, joinTeam, loginHost, loginTeam, readCookie, registerTeam, renameTeam, revokeSession,
+  sessionCookie, sessionFor, TEAM_COOKIE,
 } from './auth';
-import { calibrateRound } from './calibration';
 import type { AppContext } from './context';
 import { detectImageType, hashSecret, randomToken, safeEqual, sha256Hex } from './crypto';
 import { aiBudgetAvailable, refreshLeaderboard } from './evaluation';
 import {
-  audit, bumpVersion, createSubmission, generateReferenceDescription, HttpError, rejudgeRound,
-  requeueSubmission, setPhase,
+  audit, createSubmission, ensureTeams, hostAction, HttpError, newPinFor, rejudgeRound,
+  requeueSubmission, startEvent,
 } from './game';
-import { buildState, idx, resultsRevealed } from './state';
+import { buildState, idx } from './state';
 import type { ContentType } from './storage';
 import { todayUsage } from './usage';
 import { PHASE_ORDER, type Phase } from '../shared/types';
@@ -85,11 +84,8 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     const ctx = c.get('ctx');
     const id = crypto.randomUUID();
     await ctx.db.batch([
-      { text: `INSERT INTO events(id,code,name,host_pass_hash,projector_key) VALUES($1,$2,$3,$4,$5)`, params: [id, b.code, b.name, await hashSecret(b.hostPassword, 50000), randomToken(16)] },
+      { text: `INSERT INTO events(id,code,name,host_pass_hash,projector_key) VALUES($1,$2,$3,$4,$5)`, params: [id, b.code, b.name, await hashSecret(b.hostPassword, 20000), randomToken(16)] },
       { text: `INSERT INTO host_settings(event_id) VALUES($1)`, params: [id] },
-      { text: `INSERT INTO round_configs(event_id,round_no,title,brief,duration_sec) VALUES
-               ($1,1,'Pixel Match','Recreate the reference image as closely as you can using any AI image generator.',600),
-               ($1,2,'Crossover','Create ONE artwork that fuses all three concepts into a single scene.',900)`, params: [id] },
     ]);
     await audit(ctx, id, 'admin', 'event_created', { code: b.code });
     return c.json({ id, code: b.code });
@@ -163,30 +159,47 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     return c.json(out);
   });
 
+
+  // ───────────── team join (host-issued number + PIN) ─────────────
+  app.post('/events/:code/join', async (c) => {
+    const e = await eventByCode(c);
+    const b = await body(c, z.object({ teamNo: z.number().int().min(1).max(200), pin: z.string().min(1).max(8) }));
+    const r = await joinTeam(c.get('ctx'), e.id, b.teamNo, b.pin);
+    c.header('set-cookie', sessionCookie(TEAM_COOKIE, r.token, secure(c)));
+    return c.json({ teamId: r.teamId, name: r.name, named: r.named });
+  });
+
+  app.post('/events/:code/team-name', async (c) => {
+    const { event, teamId } = await requireTeam(c);
+    const b = await body(c, z.object({ name: z.string().min(1).max(64) }));
+    return c.json({ name: await renameTeam(c.get('ctx'), event.id, teamId, b.name) });
+  });
+
+  // ───────────── active event (no codes to type anywhere) ─────────────
+  app.get('/active', async (c) => {
+    const [e] = await c.get('ctx').db.query<any>(`SELECT code, name FROM events WHERE active LIMIT 1`);
+    return c.json(e ? { code: e.code, name: e.name } : { code: null });
+  });
+
   // ───────────── images (private; served through the Worker) ─────────────
   app.get('/img/:id', async (c) => {
     const ctx = c.get('ctx');
     const id = c.req.param('id');
     if (!/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, 'Not found');
     const [m] = await ctx.db.query<any>(
-      `SELECT i.kind, i.event_id, i.sha256, e.phase, e.projector_key,
-              s.team_id, r.round_no, (rr.reference_image_id = i.id) AS is_r1_reference
+      `SELECT i.kind, i.event_id, i.sha256, e.projector_key, s.team_id, (r.revealed_at IS NOT NULL) AS revealed
        FROM images i JOIN events e ON e.id=i.event_id
        LEFT JOIN submissions s ON (s.image_id=i.id OR s.thumb_image_id=i.id)
        LEFT JOIN round_configs r ON r.id=s.round_id
-       LEFT JOIN round_configs rr ON rr.event_id=i.event_id AND rr.round_no=1
        WHERE i.id=$1`, [id]);
     if (!m) throw new HttpError(404, 'Not found');
     const host = await sessionFor(ctx, readCookie(c.req.header('cookie'), HOST_COOKIE), 'host');
     let allowed = !!host && host.event_id === m.event_id;
-    if (!allowed) {
+    if (!allowed && (m.kind === 'submission' || m.kind === 'thumb')) {
       const team = await sessionFor(ctx, readCookie(c.req.header('cookie'), TEAM_COOKIE), 'team');
       const isTeam = !!team && team.event_id === m.event_id;
       const isProjector = !!c.req.query('pk') && safeEqual(c.req.query('pk')!, m.projector_key);
-      const phase = m.phase as Phase;
-      if (m.kind === 'reference' && m.is_r1_reference) allowed = (isTeam || isProjector) && idx(phase) >= idx('r1_open');
-      else if (m.kind === 'submission' || m.kind === 'thumb')
-        allowed = (isTeam && team!.team_id === m.team_id) || ((isTeam || isProjector) && m.round_no && resultsRevealed(phase, m.round_no));
+      allowed = (isTeam && team!.team_id === m.team_id) || ((isTeam || isProjector) && m.revealed);
     }
     if (!allowed) throw new HttpError(403, 'Not allowed');
     if (c.req.header('if-none-match') === `"${m.sha256}"`) return c.body(null, 304);
@@ -195,31 +208,73 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     return new Response(img.bytes, { headers: { 'content-type': img.contentType, 'cache-control': 'private, max-age=86400, immutable', etag: `"${m.sha256}"` } });
   });
 
-  // ───────────── gallery ─────────────
+  // ───────────── gallery (revealed spins only) ─────────────
   app.get('/events/:code/gallery', async (c) => {
     const ctx = c.get('ctx');
     const e = await eventByCode(c);
-    const roundNo = Number(c.req.query('round') ?? 1) === 2 ? 2 : 1;
     const pk = c.req.query('pk');
     const host = await sessionFor(ctx, readCookie(c.req.header('cookie'), HOST_COOKIE), 'host');
     const team = await sessionFor(ctx, readCookie(c.req.header('cookie'), TEAM_COOKIE), 'team');
-    const viewer = (host && host.event_id === e.id) || (team && team.event_id === e.id) || (pk && safeEqual(pk, e.projector_key));
+    const isHost = !!host && host.event_id === e.id;
+    const viewer = isHost || (team && team.event_id === e.id) || (pk && safeEqual(pk, e.projector_key));
     if (!viewer) throw new HttpError(401, 'Log in to view the gallery');
-    if (!resultsRevealed(e.phase, roundNo) && !(host && host.event_id === e.id)) throw new HttpError(403, 'Gallery opens when results are revealed');
+    const turn = c.req.query('turn');
+    const roundNo = Number(c.req.query('round') ?? 0);
     const rows = await ctx.db.query<any>(
-      `SELECT s.id, t.name, s.image_id, s.thumb_image_id, s.score_total, s.prompt_text, er.feedback, er.criteria
+      `SELECT s.id, t.name, s.image_id, s.thumb_image_id, s.score_total, s.prompt_text, er.feedback, er.criteria,
+              r.id AS turn_id, r.round_no, r.seq, r.title, r.bank_item, r.concepts
        FROM submissions s JOIN teams t ON t.id=s.team_id JOIN round_configs r ON r.id=s.round_id
        LEFT JOIN evaluation_results er ON er.submission_id=s.id AND er.is_published
-       WHERE r.event_id=$1 AND r.round_no=$2 AND s.status='scored' AND NOT t.disabled
-       ORDER BY s.score_total DESC NULLS LAST`, [e.id, roundNo]);
-    const q = pk && !host ? `?pk=${encodeURIComponent(pk)}` : '';
+       WHERE r.event_id=$1 AND s.status='scored' AND NOT t.disabled
+         AND ($2::uuid IS NULL OR r.id=$2::uuid) AND ($3::int = 0 OR r.round_no=$3::int)
+         AND (r.revealed_at IS NOT NULL OR $4::boolean)
+       ORDER BY r.round_no, r.seq, s.score_total DESC NULLS LAST`, [e.id, turn && /^[0-9a-f-]{36}$/.test(turn) ? turn : null, roundNo, isHost]);
+    const q = pk && !isHost ? `?pk=${encodeURIComponent(pk)}` : '';
     return c.json(rows.map((r) => ({
       id: r.id, team: r.name, score: Number(r.score_total), prompt: r.prompt_text, feedback: r.feedback, criteria: r.criteria,
       imageUrl: `/api/img/${r.image_id}${q}`, thumbUrl: `/api/img/${r.thumb_image_id}${q}`,
+      turnId: r.turn_id, roundNo: r.round_no, seq: r.seq, title: r.title, sceneId: r.bank_item, concepts: r.concepts ?? [],
     })));
   });
 
-  // ───────────── host ─────────────
+  // ───────────── host: password only, no codes or tokens ─────────────
+  async function activeEvent(c: C) {
+    const [e] = await c.get('ctx').db.query<any>(`SELECT * FROM events WHERE active LIMIT 1`);
+    return e ?? null;
+  }
+
+  app.get('/host/status', async (c) => {
+    const ctx = c.get('ctx');
+    const e = await activeEvent(c);
+    const s = await sessionFor(ctx, readCookie(c.req.header('cookie'), HOST_COOKIE), 'host');
+    return c.json({ hasEvent: !!e, name: e?.name ?? null, code: e?.code ?? null, loggedIn: !!e && !!s && s.event_id === e.id });
+  });
+
+  app.post('/host/login', async (c) => {
+    const e = await activeEvent(c);
+    if (!e) throw new HttpError(404, 'No event yet — create one');
+    const b = await body(c, z.object({ password: z.string().min(1).max(128) }));
+    const token = await loginHost(c.get('ctx'), e, b.password);
+    c.header('set-cookie', sessionCookie(HOST_COOKIE, token, secure(c)));
+    return c.json({ ok: true, code: e.code });
+  });
+
+  /** Create the first event (anyone, only while none exists) or a fresh one (logged-in host of the current event). */
+  app.post('/host/start', async (c) => {
+    const ctx = c.get('ctx');
+    const b = await body(c, z.object({ name: z.string().min(2).max(80), password: z.string().min(6).max(128), teams: z.number().int().min(1).max(120).default(20) }));
+    const current = await activeEvent(c);
+    if (current) {
+      const s = await sessionFor(ctx, readCookie(c.req.header('cookie'), HOST_COOKIE), 'host');
+      if (!s || s.event_id !== current.id) throw new HttpError(401, 'Log in to the current event before starting a new one');
+    }
+    const ev = await startEvent(ctx, b.name, b.password);
+    await ensureTeams(ctx, ev.id, b.teams);
+    const token = await (await import('./auth')).createSession(ctx, ev.id, 'host', null);
+    c.header('set-cookie', sessionCookie(HOST_COOKIE, token, secure(c)));
+    return c.json(ev);
+  });
+
   app.post('/events/:code/host/login', async (c) => {
     const e = await eventByCode(c);
     const b = await body(c, z.object({ password: z.string().min(1).max(128) }));
@@ -231,13 +286,14 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
   app.get('/events/:code/host/overview', async (c) => {
     const e = await requireHost(c);
     const ctx = c.get('ctx');
-    const [settings, rounds, teams, subs, auditRows, storage, dbSize] = await ctx.db.batch([
+    const [settings, turns, teams, subs, auditRows, storage, dbSize] = await ctx.db.batch([
       { text: `SELECT * FROM host_settings WHERE event_id=$1`, params: [e.id] },
-      { text: `SELECT r.*, ri.byte_size AS reference_bytes FROM round_configs r LEFT JOIN images ri ON ri.id=r.reference_image_id WHERE r.event_id=$1 ORDER BY round_no`, params: [e.id] },
-      { text: `SELECT t.id, t.name, t.disabled, t.created_at, c.locked_until,
+      { text: `SELECT id, round_no, seq, title, bank_item, concepts, spin_at, preview_from, preview_until, deadline_at, revealed_at, locked_model, locked_mode
+               FROM round_configs WHERE event_id=$1 AND spin_at IS NOT NULL ORDER BY spin_at DESC`, params: [e.id] },
+      { text: `SELECT t.id, t.team_no, t.name, t.named, t.disabled, t.joined_at, c.pin_plain, c.locked_until,
                  (SELECT count(*)::int FROM auth_sessions a WHERE a.team_id=t.id AND NOT a.revoked AND a.expires_at>now()) AS sessions
-               FROM teams t JOIN team_credentials c ON c.team_id=t.id WHERE t.event_id=$1 ORDER BY t.created_at`, params: [e.id] },
-      { text: `SELECT s.id, s.team_id, t.name AS team, r.round_no, s.status, s.flags, s.score_total, s.submitted_at, s.scored_at,
+               FROM teams t JOIN team_credentials c ON c.team_id=t.id WHERE t.event_id=$1 ORDER BY t.team_no NULLS LAST, t.created_at`, params: [e.id] },
+      { text: `SELECT s.id, s.team_id, t.name AS team, s.round_id AS turn_id, r.round_no, s.status, s.flags, s.score_total, s.submitted_at, s.scored_at,
                  s.thumb_image_id, s.image_id, s.prompt_text,
                  j.status AS job_status, j.attempts, j.last_error, j.next_attempt_at,
                  er.criteria, er.feedback, er.model, er.latency_ms, er.neurons_est
@@ -251,13 +307,10 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     ]);
     const usage = await todayUsage(ctx.db);
     const s = settings[0];
-    const r1 = rounds.find((r: any) => r.round_no === 1);
     return c.json({
       event: { id: e.id, code: e.code, name: e.name, phase: e.phase, registrationOpen: e.registration_open, projectorKey: e.projector_key },
-      phases: PHASE_ORDER,
       settings: s,
-      effectiveR1Mode: r1?.locked_mode ?? resolveR1Mode(s.r1_mode, s.judge_model, ctx.capabilities.imagesBinding),
-      rounds: rounds.map((r: any) => ({ ...r, reference_image_url: r.reference_image_id ? `/api/img/${r.reference_image_id}` : null })),
+      turns,
       teams,
       submissions: subs.map((x: any) => ({ ...x, thumb_url: `/api/img/${x.thumb_image_id}`, image_url: `/api/img/${x.image_id}` })),
       audit: auditRows,
@@ -265,23 +318,18 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
       capabilities: ctx.capabilities,
       storageBackend: ctx.storageBackend,
       usage: {
-        today: usage,
-        storage,
-        dbBytes: Number(dbSize[0]?.bytes ?? 0),
-        limits: {
-          aiNeuronsFreePerDay: 10000, workerRequestsFreePerDay: 100000, neonDbBytes: 1_000_000_000, neonObjectBytes: 5_000_000_000,
-          neonComputeHoursPerMonth: 100, queueRetentionHours: 24,
-        },
-        budget: await aiBudgetAvailable(ctx, e.id, r1?.locked_model ?? s.judge_model, r1?.locked_provider ?? s.judge_provider),
+        today: usage, storage, dbBytes: Number(dbSize[0]?.bytes ?? 0),
+        limits: { aiNeuronsFreePerDay: 10000, workerRequestsFreePerDay: 100000, neonDbBytes: 1_000_000_000, neonObjectBytes: 5_000_000_000 },
+        budget: await aiBudgetAvailable(ctx, e.id, s.judge_model, s.judge_provider),
       },
     });
   });
 
-  app.post('/events/:code/host/phase', async (c) => {
+  /** One endpoint for the whole show: spin1 | spin2 | end | reveal | final */
+  app.post('/events/:code/host/action', async (c) => {
     const e = await requireHost(c);
-    const b = await body(c, z.object({ to: z.enum(PHASE_ORDER as [Phase, ...Phase[]]) }));
-    await setPhase(c.get('ctx'), e, b.to);
-    return c.json({ ok: true });
+    const b = await body(c, z.object({ action: z.enum(['spin1', 'spin2', 'end', 'reveal', 'final']) }));
+    return c.json(await hostAction(c.get('ctx'), e, b.action));
   });
 
   app.post('/events/:code/host/registration', async (c) => {
@@ -290,6 +338,13 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     const ctx = c.get('ctx');
     await ctx.db.query(`UPDATE events SET registration_open=$2, state_version=state_version+1 WHERE id=$1`, [e.id, b.open]);
     await audit(ctx, e.id, 'host', 'registration', { open: b.open });
+    return c.json({ ok: true });
+  });
+
+  app.post('/events/:code/host/teams', async (c) => {
+    const e = await requireHost(c);
+    const b = await body(c, z.object({ count: z.number().int().min(1).max(120) }));
+    await ensureTeams(c.get('ctx'), e.id, b.count);
     return c.json({ ok: true });
   });
 
@@ -304,6 +359,9 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
       ai_neuron_daily_cap: z.number().int().min(0).max(10000).optional(),      // can never exceed the free allocation
       request_daily_cap: z.number().int().min(1000).max(100000).optional(),
       max_submissions_per_round: z.number().int().min(1).max(5).optional(),
+      r1_preview_sec: z.number().int().min(3).max(30).optional(),
+      r1_duration_sec: z.number().int().min(60).max(1800).optional(),
+      r2_duration_sec: z.number().int().min(60).max(1800).optional(),
     }));
     const ctx = c.get('ctx');
     const keys = Object.keys(b) as (keyof typeof b)[];
@@ -312,64 +370,7 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
       `UPDATE host_settings SET ${keys.map((k, i) => `${k}=$${i + 2}`).join(', ')}, updated_at=now() WHERE event_id=$1`,
       [e.id, ...keys.map((k) => b[k])]);
     await audit(ctx, e.id, 'host', 'settings', b);
-    return c.json({ ok: true, note: 'Judge changes apply only to rounds that have not opened yet.' });
-  });
-
-  app.put('/events/:code/host/rounds/:n', async (c) => {
-    const e = await requireHost(c);
-    const n = Number(c.req.param('n'));
-    if (n !== 1 && n !== 2) throw new HttpError(404, 'Round not found');
-    const b = await body(c, z.object({
-      title: z.string().min(1).max(60).optional(),
-      brief: z.string().max(600).optional(),
-      duration_sec: z.number().int().min(60).max(7200).optional(),
-      judging_window_sec: z.number().int().min(60).max(1800).optional(),
-      concepts: z.array(z.string().trim().min(1).max(80)).length(3).optional(),
-      reference_description: z.string().max(2500).optional(),
-    }));
-    const ctx = c.get('ctx');
-    const [r] = await ctx.db.query<any>(`SELECT locked_at FROM round_configs WHERE event_id=$1 AND round_no=$2`, [e.id, n]);
-    if (r?.locked_at && (b.concepts || b.reference_description)) throw new HttpError(409, 'Round already opened — concepts/description are locked for fairness');
-    const keys = Object.keys(b) as (keyof typeof b)[];
-    if (keys.length) {
-      await ctx.db.query(
-        `UPDATE round_configs SET ${keys.map((k, i) => `${k}=$${i + 3}${k === 'concepts' ? '::jsonb' : ''}`).join(', ')} WHERE event_id=$1 AND round_no=$2`,
-        [e.id, n, ...keys.map((k) => (k === 'concepts' ? JSON.stringify(b[k]) : b[k]))]);
-      await bumpVersion(ctx, e.id);
-      await audit(ctx, e.id, 'host', 'round_config', { round: n, fields: keys });
-    }
     return c.json({ ok: true });
-  });
-
-  app.post('/events/:code/host/rounds/1/reference', async (c) => {
-    const e = await requireHost(c);
-    const ctx = c.get('ctx');
-    const [r] = await ctx.db.query<any>(`SELECT id, locked_at FROM round_configs WHERE event_id=$1 AND round_no=1`, [e.id]);
-    if (r.locked_at) throw new HttpError(409, 'Round 1 has opened — the reference is locked');
-    const form = await c.req.formData();
-    const full = await readImage(form.get('full'), 'Reference');
-    const judge = await readImage(form.get('judge'), 'Reference judge copy');
-    const dhash = String(form.get('dhash') ?? '').toLowerCase();
-    const a = await ctx.images.put({ eventId: e.id, kind: 'reference', bytes: full.bytes, contentType: full.type });
-    const j = await ctx.images.put({ eventId: e.id, kind: 'judge', bytes: judge.bytes, contentType: judge.type });
-    await ctx.db.query(
-      `UPDATE round_configs SET reference_image_id=$2, reference_judge_image_id=$3, reference_dhash=$4, reference_description=NULL, calibration=NULL WHERE id=$1`,
-      [r.id, a.id, j.id, /^[0-9a-f]{16}$/.test(dhash) ? dhash : null]);
-    await audit(ctx, e.id, 'host', 'reference_uploaded', { bytes: full.bytes.length });
-    return c.json({ ok: true, imageUrl: `/api/img/${a.id}` });
-  });
-
-  app.post('/events/:code/host/rounds/1/describe', async (c) => {
-    const e = await requireHost(c);
-    const [r] = await c.get('ctx').db.query<any>(`SELECT locked_at FROM round_configs WHERE event_id=$1 AND round_no=1`, [e.id]);
-    if (r?.locked_at) throw new HttpError(409, 'Round 1 has opened — the description is locked');
-    return c.json({ description: await generateReferenceDescription(c.get('ctx'), e.id) });
-  });
-
-  app.post('/events/:code/host/rounds/:n/calibrate', async (c) => {
-    const e = await requireHost(c);
-    const n = Number(c.req.param('n')) === 2 ? 2 : 1;
-    return c.json(await calibrateRound(c.get('ctx'), e.id, n));
   });
 
   app.post('/events/:code/host/rounds/:n/rejudge', async (c) => {
@@ -405,6 +406,7 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
       await ctx.db.query(`UPDATE evaluation_jobs SET status='cancelled', finished_at=now() WHERE submission_id=$1 AND status IN ('queued','retry','paused_quota')`, [id]);
       await refreshLeaderboard(ctx, e.id);
     } else throw new HttpError(404, 'Unknown action');
+    await ctx.db.query(`UPDATE events SET state_version=state_version+1 WHERE id=$1`, [e.id]);
     await audit(ctx, e.id, 'host', `submission_${action}`, { id });
     return c.json({ ok: true });
   });
@@ -414,25 +416,14 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     const ctx = c.get('ctx');
     const id = c.req.param('id');
     const action = c.req.param('action');
-    if (action === 'reset-pin') {
-      const b = await body(c, z.object({ pin: z.string() }));
-      validatePin(b.pin);
-      await ctx.db.batch([
-        { text: `UPDATE team_credentials SET pin_hash=$2, failed_attempts=0, locked_until=NULL WHERE team_id=$1 AND team_id IN (SELECT id FROM teams WHERE event_id=$3)`, params: [id, await hashSecret(b.pin, ctx.pinIterations), e.id] },
-        { text: `UPDATE auth_sessions SET revoked=true WHERE team_id=$1`, params: [id] },
-      ]);
-    } else if (action === 'disable' || action === 'enable') {
+    let pin: string | undefined;
+    if (action === 'new-pin') pin = await newPinFor(ctx, e.id, id);
+    else if (action === 'disable' || action === 'enable') {
       await ctx.db.query(`UPDATE teams SET disabled=$3 WHERE id=$1 AND event_id=$2`, [id, e.id, action === 'disable']);
-      await refreshLeaderboard(ctx, e.id);
+      await ctx.db.query(`UPDATE events SET state_version=state_version+1 WHERE id=$1`, [e.id]);
     } else throw new HttpError(404, 'Unknown action');
     await audit(ctx, e.id, 'host', `team_${action}`, { id });
-    return c.json({ ok: true });
-  });
-
-  app.post('/events/:code/host/leaderboard/refresh', async (c) => {
-    const e = await requireHost(c);
-    await refreshLeaderboard(c.get('ctx'), e.id);
-    return c.json({ ok: true });
+    return c.json({ ok: true, pin });
   });
 
   return app;

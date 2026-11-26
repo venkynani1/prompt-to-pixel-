@@ -2,10 +2,12 @@
 
 A two-round AI image challenge for corporate events. Teams write prompts in any AI image generator, upload their best result, and an AI judge scores every entry blind. The game is fully cloud-hosted on **free tiers only** (Cloudflare Workers + Neon), with no server on anyone's laptop.
 
-| Round | Task | Judged on (points) |
+| Round | What happens | Judged on (points per spin) |
 |---|---|---|
-| 1 · Pixel Match | Recreate a reference image | composition 25, subject 25, colour & lighting 20, style 15, detail 15 |
-| 2 · Crossover | Fuse three host-chosen concepts into one artwork | each concept 15 × 3, fusion 20, creativity 15, visual quality 20 |
+| 1 · Scene Recall | A wheel picks one of 12 original movie scenes. It shows for ~8 s, then hides. Teams recreate it from memory with any AI image generator (4–5 min). Spin as many scenes as you like. | composition 25, subject 25, colour & lighting 20, style 15, detail 15 |
+| 2 · Movie Mashup | Three reels pick a genre, a hero and a setting. Teams design that movie's poster. | each pick 15 × 3, fusion 20, creativity 15, visual quality 20 |
+
+Teams join by scanning one QR code and entering the team number + PIN from a printed slip (BID WARS style). The host console is one big "next step" button.
 
 The rules are a **draft** (see `src/shared/rubrics.ts`), written from scratch — review them with the organisers.
 

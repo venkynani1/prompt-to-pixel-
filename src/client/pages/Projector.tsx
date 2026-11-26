@@ -2,15 +2,15 @@ import QRCode from 'qrcode';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { criteriaFor } from '../../shared/rubrics';
-import { phaseRound, type LeaderRow } from '../../shared/types';
+import type { LeaderRow } from '../../shared/types';
+import { MashupReels, SceneImage, SceneWheel, stageOf, TimeBar, useFrameNow } from '../components/show';
 import { Countdown, Leaderboard, Notice, Wordmark } from '../components/ui';
-import { remainingMs, useEventState, useNow } from '../lib';
-import { Concepts, Progress } from './Play';
+import { useEventState } from '../lib';
+import { Progress } from './Play';
 
 export function useQr(text: string) {
   const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => { QRCode.toDataURL(text, { margin: 1, width: 640, color: { dark: '#15112E', light: '#F3F0FF' } }).then(setUrl); }, [text]);
+  useEffect(() => { QRCode.toDataURL(text, { margin: 1, width: 720, color: { dark: '#15112E', light: '#F3F0FF' } }).then(setUrl); }, [text]);
   return url;
 }
 
@@ -18,73 +18,93 @@ export function Projector() {
   const code = (useParams().code ?? '').toUpperCase();
   const pk = useSearchParams()[0].get('pk') ?? undefined;
   const { state, error, offset } = useEventState(code, { pk, keepAliveHidden: true });
-  const now = useNow(200);
+  const round = state?.round;
+  const live = !!round && !!state && state.event.phase.endsWith('_open');
+  const now = useFrameNow(offset, live);
   const joinUrl = `${location.origin}/e/${code}`;
   const qr = useQr(joinUrl);
 
   if (!state) return <div className="p-16"><Notice kind={error ? 'error' : 'info'}>{error ?? 'Connecting…'}</Notice></div>;
-  const { event, round } = state;
-  const left = remainingMs(round?.deadlineAt, offset, now);
-  const rn = phaseRound(event.phase);
+  const { event } = state;
+  const st = round ? stageOf(round, now) : null;
+  const sceneKey = `${event.phase}-${round?.turnId ?? ''}-${live ? st?.stage : ''}`;
 
   return (
-    <main className="min-h-screen px-[5vw] py-[4vh] flex flex-col">
+    <main className="min-h-screen px-[4vw] py-[3vh] flex flex-col">
       <header className="flex items-center justify-between">
         <Wordmark size="md" />
         <span className="text-2xl text-muted">{event.name}</span>
       </header>
       <AnimatePresence mode="wait">
-        <motion.section key={event.phase} className="flex-1 flex flex-col justify-center py-[4vh]"
-          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.35 }}>
+        <motion.section key={sceneKey} className="flex-1 flex flex-col justify-center py-[3vh]"
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
 
           {event.phase === 'lobby' && (
-            <div className="grid md:grid-cols-[1fr_auto] items-center gap-[6vw]">
+            <div className="grid lg:grid-cols-[auto_1fr] items-center gap-[5vw]">
+              <div className="grid justify-items-center gap-4">
+                {qr && <img src={qr} alt={`QR code to join: ${joinUrl}`} className="w-[min(30vw,480px)] rounded-3xl" />}
+                <p className="text-2xl text-muted">Scan, then enter your team number and PIN</p>
+              </div>
               <div className="grid gap-6">
-                <h1 className="text-[clamp(3rem,7vw,7rem)] font-extrabold">Scan to register your team.</h1>
-                <p className="text-3xl text-muted">or go to <b className="text-paper">{joinUrl.replace(/^https?:\/\//, '')}</b></p>
-                <p className="display text-[clamp(4rem,10vw,9rem)] font-extrabold rgb-split tabular-nums">{event.teamCount} <span className="font-body text-4xl font-normal tracking-normal text-muted" style={{ textShadow: "none" }}>teams registered</span></p>
+                <h1 className="text-[clamp(3rem,6vw,6rem)] font-extrabold">Join the game</h1>
+                <p className="display text-7xl font-extrabold rgb-split tabular-nums">{event.teamCount}<span className="font-body text-3xl font-normal text-muted" style={{ textShadow: 'none' }}> teams in</span></p>
+                <ul className="flex flex-wrap gap-3">
+                  {(state.teams ?? []).map((t, i) => (
+                    <li key={i} className={`rounded-xl px-4 py-2 text-xl font-bold transition-colors duration-500 ${t.joined ? 'bg-sub-g text-dusk' : 'bg-panel text-muted'}`}>
+                      {t.no ? <span className="tabular-nums mr-2 opacity-70">{t.no}</span> : null}{t.joined ? t.name : 'waiting'}
+                    </li>
+                  ))}
+                </ul>
               </div>
-              {qr && <img src={qr} alt={`QR code for ${joinUrl}`} className="w-[min(32vw,520px)] rounded-3xl" />}
             </div>
           )}
 
-          {(event.phase === 'r1_brief' || event.phase === 'r2_brief') && round && (
-            <div className="grid gap-10 max-w-6xl">
-              <p className="text-3xl text-muted">Round {round.roundNo}</p>
-              <h1 className="text-[clamp(5rem,13vw,12rem)] font-extrabold rgb-split">{round.title}</h1>
-              <p className="text-4xl max-w-[34ch]">{round.brief}</p>
-              <ul className="flex flex-wrap gap-x-10 gap-y-3 text-2xl text-muted">
-                {criteriaFor(round.roundNo).map((c) => <li key={c.key}><b className="text-paper tabular-nums">{c.weight}</b> {c.label}</li>)}
-              </ul>
-            </div>
+          {live && round && st && (
+            <>
+              {st.stage === 'spin' && (
+                <div className="grid gap-6 justify-items-center">
+                  <p className="text-4xl text-muted">{now < new Date(round.spinAt).getTime() ? 'Get ready…' : round.roundNo === 1 ? `Round 1, scene ${round.seq}` : 'Round 2, Movie Mashup'}</p>
+                  {round.roundNo === 1 ? <SceneWheel round={round} now={now} size={Math.min(window.innerHeight * 0.68, 720)} /> : <div className="w-full max-w-6xl"><MashupReels round={round} now={now} big /></div>}
+                </div>
+              )}
+              {st.stage === 'preview' && round.roundNo === 1 && (
+                <div className="grid gap-4 justify-items-center">
+                  <h1 className="text-6xl font-extrabold">{round.title}. Memorise it! <span className="tabular-nums text-sub-r">{Math.ceil(st.msLeft / 1000)}</span></h1>
+                  <SceneImage id={round.sceneId!} className="h-[66vh] w-auto shadow-2xl" />
+                  <div className="w-[66vh]"><TimeBar msLeft={st.msLeft} totalMs={new Date(round.previewUntil).getTime() - new Date(round.previewFrom).getTime()} color="bg-sub-r" /></div>
+                </div>
+              )}
+              {st.stage === 'preview' && round.roundNo === 2 && (
+                <div className="grid gap-8 w-full max-w-6xl mx-auto">
+                  <h1 className="text-6xl font-extrabold">Design the poster for this movie</h1>
+                  <MashupReels round={round} now={now} big />
+                </div>
+              )}
+              {(st.stage === 'open' || st.stage === 'closed') && (
+                <div className="grid gap-8 justify-items-center text-center">
+                  <p className="text-4xl text-muted">{round.roundNo === 1 ? 'Recreate it from memory' : 'Design the poster'}</p>
+                  <Countdown ms={st.msLeft} big />
+                  {round.roundNo === 2 && <div className="w-full max-w-6xl"><MashupReels round={round} now={now} big /></div>}
+                  {state.progress && <p className="text-4xl tabular-nums"><b className="display text-6xl">{state.progress.submitted}</b><span className="text-muted"> of {event.teamCount} teams dropped an image</span></p>}
+                </div>
+              )}
+            </>
           )}
 
-          {(event.phase === 'r1_open' || event.phase === 'r2_open') && round && (
-            <div className={`grid items-center gap-[5vw] ${round.roundNo === 1 ? 'lg:grid-cols-[1fr_1fr]' : ''}`}>
-              <div className="grid gap-4 text-center lg:text-left">
-                <p className="text-3xl text-muted">{round.title}</p>
-                <Countdown ms={left} big />
-                {state.progress && <p className="text-3xl text-muted tabular-nums">{state.progress.submitted} of {event.teamCount} teams submitted</p>}
-              </div>
-              {round.roundNo === 1 && round.referenceImageUrl && <img src={round.referenceImageUrl} alt="Reference image" className="max-h-[70vh] w-full object-contain rounded-2xl" />}
-              {round.roundNo === 2 && <Concepts concepts={round.concepts} big />}
-            </div>
-          )}
-
-          {(event.phase === 'r1_judging' || event.phase === 'r2_judging') && state.progress && (
+          {event.phase.endsWith('_judging') && state.progress && (
             <div className="grid gap-12 max-w-5xl">
-              <h1 className="text-[clamp(4rem,10vw,10rem)] font-extrabold">The judge is looking.</h1>
+              <h1 className="text-[clamp(4rem,9vw,9rem)] font-extrabold">The judge is looking.</h1>
               <Progress p={state.progress} big />
             </div>
           )}
 
-          {(event.phase === 'r1_results' || event.phase === 'r2_results') && state.leaderboard && (
-            <div className="grid lg:grid-cols-[1.1fr_1fr] gap-[4vw] items-start">
-              <div className="grid gap-6">
-                <h1 className="text-6xl font-extrabold">Round {rn} standings</h1>
-                <Leaderboard rows={state.leaderboard} limit={10} big />
+          {event.phase.endsWith('_results') && round && (
+            <div className="grid lg:grid-cols-[1fr_1.1fr] gap-[4vw] items-start">
+              <div className="grid gap-5">
+                <h1 className="text-5xl font-extrabold">Standings</h1>
+                {state.leaderboard ? <Leaderboard rows={state.leaderboard} limit={10} big showRounds={false} /> : <p className="text-muted text-2xl">No scores yet.</p>}
               </div>
-              <GalleryReel code={code} pk={pk} roundNo={rn as 1 | 2} />
+              <TopEntries code={code} pk={pk} turnId={round.turnId} sceneId={round.sceneId} concepts={round.concepts} />
             </div>
           )}
 
@@ -96,34 +116,37 @@ export function Projector() {
   );
 }
 
-function GalleryReel({ code, pk, roundNo }: { code: string; pk?: string; roundNo: 1 | 2 }) {
+/** Results: the original scene next to the best three images of this spin. */
+function TopEntries({ code, pk, turnId, sceneId, concepts }: { code: string; pk?: string; turnId: string; sceneId: string | null; concepts: string[] }) {
   const [items, setItems] = useState<any[]>([]);
-  const [i, setI] = useState(0);
   useEffect(() => {
-    fetch(`/api/events/${code}/gallery?round=${roundNo}${pk ? `&pk=${encodeURIComponent(pk)}` : ''}`, { credentials: 'same-origin' })
-      .then((r) => (r.ok ? r.json() : [])).then((x) => setItems(x.slice(0, 12)));
-  }, [code, pk, roundNo]);
-  useEffect(() => { if (items.length < 2) return; const t = setInterval(() => setI((n) => (n + 1) % items.length), 7000); return () => clearInterval(t); }, [items.length]);
-  const it = items[i];
-  if (!it) return null;
+    fetch(`/api/events/${code}/gallery?turn=${turnId}${pk ? `&pk=${encodeURIComponent(pk)}` : ''}`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : [])).then((x) => setItems(x.slice(0, 3)));
+  }, [code, pk, turnId]);
   return (
-    <AnimatePresence mode="wait">
-      <motion.figure key={it.id} className="grid gap-4" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.6 }}>
-        <img src={it.imageUrl} alt={`Entry by ${it.team}`} className="max-h-[58vh] w-full object-contain rounded-2xl bg-panel" />
-        <figcaption className="flex items-baseline justify-between gap-6">
-          <span className="text-3xl font-bold">{it.team}</span>
-          <span className="display text-5xl font-extrabold rgb-split tabular-nums">{it.score.toFixed(1)}</span>
-        </figcaption>
-        {it.prompt && <p className="text-xl text-muted line-clamp-2">“{it.prompt}”</p>}
-      </motion.figure>
-    </AnimatePresence>
+    <div className="grid gap-5">
+      {sceneId ? (
+        <div className="grid grid-cols-[1fr_auto] gap-4 items-end">
+          <SceneImage id={sceneId} className="w-full max-h-[34vh] object-contain" />
+          <p className="text-2xl text-muted">The scene</p>
+        </div>
+      ) : <p className="text-3xl display font-bold">{concepts.join(' + ')}</p>}
+      <div className="grid grid-cols-3 gap-4">
+        {items.map((it, i) => (
+          <motion.figure key={it.id} className="grid gap-2" initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 + (2 - i) * 0.5 }}>
+            <img src={it.imageUrl} alt={`Image by ${it.team}`} className="aspect-square w-full object-cover rounded-xl bg-panel" />
+            <figcaption className="flex justify-between gap-2 text-xl"><span className="font-bold truncate">{i + 1}. {it.team}</span><span className="display font-extrabold tabular-nums">{it.score.toFixed(0)}</span></figcaption>
+          </motion.figure>
+        ))}
+      </div>
+    </div>
   );
 }
 
 function Podium({ rows }: { rows: LeaderRow[] }) {
   const top = rows.slice(0, 3);
   const order = [top[1], top[0], top[2]].filter(Boolean);
-  const heights: Record<number, string> = { 1: 'h-[40vh]', 2: 'h-[30vh]', 3: 'h-[22vh]' };
+  const heights: Record<number, string> = { 1: 'h-[38vh]', 2: 'h-[28vh]', 3: 'h-[20vh]' };
   const colors: Record<number, string> = { 1: 'bg-sub-g', 2: 'bg-sub-b', 3: 'bg-sub-r' };
   return (
     <div className="grid gap-10">
@@ -133,8 +156,8 @@ function Podium({ rows }: { rows: LeaderRow[] }) {
           <motion.div key={r.teamId} className="flex flex-col items-center gap-4 w-[22vw]"
             initial={{ opacity: 0, y: 60 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: [1.2, 2.4, 0][i], duration: 0.7, ease: [0.2, 0.8, 0.2, 1] }}>
             <span className="text-4xl font-bold text-center">{r.name}</span>
-            <span className="display text-5xl font-extrabold tabular-nums">{r.total.toFixed(1)}</span>
-            <div className={`w-full rounded-t-2xl ${heights[r.rank] ?? 'h-[18vh]'} ${colors[r.rank] ?? 'bg-panel'} flex items-start justify-center pt-6`}>
+            <span className="display text-5xl font-extrabold tabular-nums">{r.total.toFixed(0)}</span>
+            <div className={`w-full rounded-t-2xl ${heights[i === 1 ? 1 : i === 0 ? 2 : 3]} ${colors[i === 1 ? 1 : i === 0 ? 2 : 3]} flex items-start justify-center pt-6`}>
               <span className="display text-8xl font-extrabold text-dusk">{r.rank}</span>
             </div>
           </motion.div>

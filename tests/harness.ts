@@ -1,5 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import sharp from 'sharp';
 import { createApp } from '../src/worker/app';
 import type { JudgeProvider, VisionRequest } from '../src/worker/ai/providers';
@@ -16,7 +16,7 @@ export const goodR2 = (v = 6) => JSON.stringify({ scores: { concept_a: v, concep
 
 export async function makeHarness(opts: { objectStore?: boolean } = {}) {
   const pg = new PGlite();
-  await pg.exec(readFileSync('migrations/0001_init.sql', 'utf8'));
+  for (const f of readdirSync('migrations').filter((f) => f.endsWith('.sql')).sort()) await pg.exec(readFileSync(`migrations/${f}`, 'utf8'));
   const db: Db = {
     query: async (text, params = []) => (await pg.query(text, params as any[])).rows as any,
     batch: async (stmts) => pg.transaction(async (tx) => {

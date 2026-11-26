@@ -43,8 +43,8 @@ export async function refreshLeaderboard(ctx: AppContext, eventId: string) {
              SELECT t.event_id, t.id, x.r1, x.r2, coalesce(x.r1,0)+coalesce(x.r2,0), x.r2_at, now()
              FROM teams t
              LEFT JOIN LATERAL (
-               SELECT max(s.score_total) FILTER (WHERE r.round_no=1) AS r1,
-                      max(s.score_total) FILTER (WHERE r.round_no=2) AS r2,
+               SELECT sum(s.score_total) FILTER (WHERE r.round_no=1) AS r1,
+                      sum(s.score_total) FILTER (WHERE r.round_no=2) AS r2,
                       max(s.submitted_at) FILTER (WHERE r.round_no=2) AS r2_at
                FROM submissions s JOIN round_configs r ON r.id=s.round_id
                WHERE s.team_id=t.id AND s.status='scored') x ON true
@@ -184,8 +184,8 @@ export async function reconcile(ctx: AppContext): Promise<{ closed: number; requ
     `UPDATE events e SET phase = CASE e.phase WHEN 'r1_open' THEN 'r1_judging' ELSE 'r2_judging' END,
             phase_changed_at=now(), state_version=e.state_version+1
      FROM round_configs r
-     WHERE r.event_id=e.id AND e.phase IN ('r1_open','r2_open')
-       AND r.round_no = CASE e.phase WHEN 'r1_open' THEN 1 ELSE 2 END
+     WHERE e.phase IN ('r1_open','r2_open')
+       AND r.id = (SELECT ct.id FROM round_configs ct WHERE ct.event_id=e.id AND ct.spin_at IS NOT NULL ORDER BY ct.spin_at DESC LIMIT 1)
        AND r.deadline_at < now() - interval '5 seconds'
      RETURNING e.id`);
 

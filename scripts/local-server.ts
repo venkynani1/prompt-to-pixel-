@@ -5,7 +5,7 @@
  */
 import { PGlite } from '@electric-sql/pglite';
 import { createServer } from 'node:http';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { createApp } from '../src/worker/app';
 import type { AppContext } from '../src/worker/context';
@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 
 export async function startLocal(opts: { port?: number; judgeLatencyMs?: number; quiet?: boolean } = {}) {
   const pg = new PGlite();
-  await pg.exec(readFileSync('migrations/0001_init.sql', 'utf8'));
+  for (const f of readdirSync('migrations').filter((f) => f.endsWith('.sql')).sort()) await pg.exec(readFileSync(`migrations/${f}`, 'utf8'));
   const db: Db = {
     query: async (t, p = []) => (await pg.query(t, p as any[])).rows as any,
     batch: (stmts) => pg.transaction(async (tx) => {

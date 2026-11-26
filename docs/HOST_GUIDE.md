@@ -1,52 +1,29 @@
-# Host operation guide
+# Host guide (v2.1 — wheel spins)
 
-You need two screens: the **host console** on your laptop or tablet (`/host`), and the **projector** (`/e/CODE/screen?pk=…`). Open the projector link from *Screens & registration* in the console. Keep the projector link private — anyone with it can watch the screen view.
+Everything happens in your browser. No codes, no tokens.
 
-## The day before
+## Before the day (5 minutes)
+1. Open **`/host`** on the app link → **Set up your game**: event name, a host password, number of teams → **Create game**.
+2. Click **Print team PINs** and print the slips. Cut them and give one to each team (team number + 4-digit PIN + QR).
+3. Optional: **Settings** → timings (scene shown 8 s, Round 1 recreate 4.5 min, Round 2 poster 6 min) and uploads per spin (2).
 
-1. Open the host console and log in with the event code and host password from `deploy-output.txt`.
-2. **Round 1**: set the title, brief and minutes, then upload the reference image. Compression happens in your browser.
-   - If the comparison mode shows `reference-description`, click **Generate with AI**. Read the text and correct anything wrong, because this is what entries are scored against. Then **Save description**.
-3. **Round 2**: enter the three crossover concepts and the minutes.
-4. **AI judge**: choose the model recommended in `docs/reports/BENCHMARK.md` and save.
-5. **Run calibration** for both rounds (3 AI calls). An identical copy should score 75+ and a blank card 35 or less. If calibration fails, don't run that model.
-6. The judge model is **locked when each round starts** and can't change silently. Check the settings now.
-
-## Run of show
-
-| Step | Button | Projector shows |
+## On the day
+| You click | Big screen | Phones |
 |---|---|---|
-| Doors open | — | QR code + team counter |
-| Teams register (one phone per team, please) | — | counter rises |
-| Close registration when ready | *Close registration* | — |
-| Brief | *Show Round 1 brief* | title, brief, scoring weights |
-| Go | *Start Round 1* | big countdown + reference + submitted count |
-| Time ends automatically (server clock) or early | *End Round 1 now* | "The judge is looking" + progress |
-| All judged | *Reveal Round 1 results* | animated standings + Pixel Gallery reel |
-| Round 2 | *Show Round 2 brief* → *Start Round 2* | three concepts + countdown |
-| Finish | *Reveal Round 2 results* → *Show final standings* | podium (winner revealed last) |
+| **Open big screen** (put it on the projector) | QR code + team roll-call that lights up as teams join | Scan → team number + PIN → name the team |
+| **Start Round 1: spin the wheel** | "Get ready" (3 s) → wheel spins (6 s) → the scene shows for 8 s → hidden → countdown | Same scene + "Memorise it!", then the countdown and **Drop image** |
+| *(automatic)* | Count of teams who dropped an image | Each image is judged by the AI the moment it's dropped |
+| Time runs out (or **End now**) | "The judge is looking" + progress | Their status |
+| **Show the scores** | Standings + the original scene next to the top 3 images | Their score, breakdown, AI comment, total and place |
+| **Spin the next scene** — as many as you like | New scene (never repeats until all 12 are used) | — |
+| **Go to Round 2: Movie Mashup** (any time) | Three reels pick a genre, a hero and a setting | Design that movie's poster, drop it |
+| **Show the scores** → **Show final standings** | Podium (winner revealed last) | Final place |
 
-Judging starts the moment each team uploads, so most entries are already scored when time runs out. Teams can see that their entry was judged, but not the score until you reveal results.
+Scores add up across every spin. Round 2 breaks ties.
 
-## Handling problems
-
-| You see | Do |
-|---|---|
-| Entry **Held for review**: *Looks like the reference itself* | Open it. If they really just re-uploaded the reference, **Reject** (0 points). Otherwise **Approve**, and it gets judged. |
-| *Identical to another team* | Two teams uploaded the same file. Talk to them, then Approve or Reject. |
-| *Contains text aimed at the judge* | Someone wrote instructions in the picture. The score shown ignored the text. Approve or Reject. |
-| **Judging failed** after 4 attempts | Click **Retry**. Points are never invented — a failed entry has no score until it's judged. |
-| **Paused (AI quota)** | The daily AI budget is used up. Entries are safe. Raise *Daily neuron cap* (max 10,000) if there's room. Otherwise judging resumes automatically after 05:30 IST, or you can switch to the Ollama fallback and **Re-judge round**. |
-| Usage bar for Worker requests turns red | Ask extra phones per team to close the page. Polling slows automatically. |
-| Team forgot PIN or is locked out | *Teams → Reset PIN*. This signs out their old devices. |
-| Wrong phase clicked | *Back to …* steps back one phase. Re-opening a round keeps its judge lock. |
-| Projector frozen | Reload it. State comes from the server, so nothing is lost. |
-
-Every host action is in the **Activity log**.
-
-## After the event
-
-The galleries stay available to logged-in teams. You can pull CSVs from Neon's SQL editor:
-```sql
-SELECT t.name, l.r1_score, l.r2_score, l.total, l.rank FROM leaderboard_entries l JOIN teams t ON t.id=l.team_id ORDER BY rank;
-```
+## If something goes wrong
+- **Needs your attention** appears at the top of the console only when needed: an image that is the original scene itself, two teams with the same file, text aimed at the AI, or a failed judgement → **Approve**, **Reject** or **Retry judging**.
+- A team lost its PIN → its card in **Teams** → **New PIN**.
+- More teams arrived → **Teams** → set the total → **Add teams** → print again.
+- The AI allowance runs low → **Settings** shows how many images are left today; images are never lost, they wait and are judged after 05:30 IST.
+- New group, fresh start → **Settings → Start a fresh game**.

@@ -1,4 +1,4 @@
-/** Drives a full local game and screenshots each screen (used to review the UI). */
+/** Drives a full local game (simulated AI judge) and screenshots every screen into docs/screens. */
 import puppeteer from 'puppeteer-core';
 import sharp from 'sharp';
 import { mkdirSync } from 'node:fs';
@@ -6,6 +6,7 @@ import { startLocal } from './local-server';
 
 const OUT = process.env.SHOTS ?? 'docs/screens';
 mkdirSync(OUT, { recursive: true });
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 class Jar {
   c = new Map<string, string>();
@@ -22,81 +23,96 @@ class Jar {
   }
 }
 
-async function art(seed: number, w = 768, h = 768) {
+async function art(seed: number) {
   const hue = (seed * 47) % 360;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
-    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="hsl(${hue},70%,55%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360},60%,20%)"/></linearGradient></defs>
-    <rect width="100%" height="100%" fill="url(#g)"/>
-    <circle cx="${w * 0.7}" cy="${h * 0.3}" r="${w * 0.12}" fill="hsl(${(hue + 180) % 360},90%,70%)"/>
-    <path d="M0 ${h * 0.75} Q ${w * 0.3} ${h * (0.5 + (seed % 5) / 20)} ${w * 0.6} ${h * 0.72} T ${w} ${h * 0.68} V ${h} H 0 Z" fill="hsl(${(hue + 30) % 360},40%,12%)"/>
-    <rect x="${w * 0.2}" y="${h * 0.48}" width="${w * 0.08}" height="${h * 0.3}" fill="hsl(${hue},20%,8%)"/>
-  </svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="768" height="768"><rect width="100%" height="100%" fill="hsl(${hue},60%,45%)"/><circle cx="${300 + seed * 20}" cy="260" r="110" fill="hsl(${(hue + 160) % 360},90%,70%)"/><path d="M0 560 Q 300 ${400 + seed * 10} 768 540 V768 H0Z" fill="#1b1b2e"/></svg>`;
   return sharp(Buffer.from(svg)).webp({ quality: 82 }).toBuffer();
 }
 
 async function main() {
-  const srv = await startLocal({ port: 0, judgeLatencyMs: 300, quiet: true });
+  const srv = await startLocal({ port: 0, judgeLatencyMs: 400, quiet: true });
   const base = `http://localhost:${srv.port}`;
-  const code = 'DEMO26';
-  const admin = new Jar(base);
-  await admin.call('/api/admin/events', { method: 'POST', headers: { authorization: 'Bearer local-admin-token' }, json: { code, name: 'Hexaware Innovation Day', hostPassword: 'host-password-1' } });
-  const host = new Jar(base);
-  await host.call(`/api/events/${code}/host/login`, { method: 'POST', json: { password: 'host-password-1' } });
-  const ov = await host.call(`/api/events/${code}/host/overview`);
-  const pk = ov.event.projectorKey;
-  const ref = await art(3);
-  const fd = new FormData(); fd.set('full', new Blob([ref]), 'r.webp'); fd.set('judge', new Blob([ref]), 'j.webp'); fd.set('dhash', 'ffffffffffffffff');
-  await host.call(`/api/events/${code}/host/rounds/1/reference`, { method: 'POST', body: fd });
-  await host.call(`/api/events/${code}/host/rounds/2`, { method: 'PUT', json: { concepts: ['Chennai auto-rickshaw', 'Samurai armour', 'Deep-sea bioluminescence'] } });
-
-  const names = ['Render Rangers', 'Prompt Pirates', 'Latent Legends', 'Diffusion Divas', 'Token Titans', 'Neural Nomads', 'Seed Squad', 'Pixel Pushers', 'CFG Crew', 'Noise Ninjas', 'Upscale United', 'Byte Me'];
-  const teams: Jar[] = [];
-  for (const n of names) { const j = new Jar(base); await j.call(`/api/events/${code}/register`, { method: 'POST', json: { teamName: n, pin: '4826' } }); teams.push(j); }
-
   const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox', '--force-color-profile=srgb'] });
-  const phone = async () => { const p = await browser.newPage(); await p.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true }); return p; };
-  const shot = async (p: any, name: string, full = false) => { await p.bringToFront(); await new Promise((r) => setTimeout(r, 1800)); await p.screenshot({ path: `${OUT}/${name}.png`, fullPage: full }); console.log('shot', name); };
+  const page = async (w: number, h: number, mobile = false) => { const p = await browser.newPage(); await p.setViewport({ width: w, height: h, deviceScaleFactor: mobile ? 2 : 1, isMobile: mobile, hasTouch: mobile }); return p; };
+  const shot = async (p: any, name: string, full = false) => { await p.bringToFront(); await sleep(900); await p.screenshot({ path: `${OUT}/${name}.png`, fullPage: full }); console.log('shot', name); };
 
-  const home = await phone(); await home.goto(base, { waitUntil: 'networkidle0' }); await shot(home, '01-home');
-  const me = await phone(); await me.goto(`${base}/e/${code}`, { waitUntil: 'networkidle0' });
-  await me.type('#team', 'Glitch Gurus'); await me.type('#pin', '5937'); await shot(me, '02-register');
-  await me.click('button.btn'); await me.waitForNavigation({ waitUntil: 'networkidle0' }); await shot(me, '03-lobby');
-
-  const screen = await browser.newPage(); await screen.setViewport({ width: 1920, height: 1080 });
-  await screen.goto(`${base}/e/${code}/screen?pk=${pk}`, { waitUntil: 'networkidle0' }); await shot(screen, '10-projector-lobby');
-
-  const phase = (to: string) => host.call(`/api/events/${code}/host/phase`, { method: 'POST', json: { to } });
-  await host.call(`/api/events/${code}/host/rounds/1/describe`, { method: 'POST' });
-  await phase('r1_brief'); await screen.reload({ waitUntil: 'networkidle0' }); await shot(screen, '11-projector-brief');
-  await me.reload({ waitUntil: 'networkidle0' }); await shot(me, '04-brief', true);
-  await phase('r1_open');
-  await me.reload({ waitUntil: 'networkidle0' }); await shot(me, '05-round1-live', true);
-  for (let i = 0; i < 8; i++) { const f = new FormData(); const a = await art(10 + i); for (const k of ['full', 'judge', 'thumb']) f.set(k, new Blob([a]), 'a.webp'); f.set('prompt', `cinematic dusk landscape, glowing moon, variant ${i}`); await teams[i].call(`/api/events/${code}/submit`, { method: 'POST', body: f }); }
-  await screen.reload({ waitUntil: 'networkidle0' }); await shot(screen, '12-projector-round1-live');
-
-  const hostPage = await browser.newPage(); await hostPage.setViewport({ width: 1440, height: 1000 });
+  // host creates the game in the browser (no codes, no tokens)
+  const hostPage = await page(1440, 1000);
   await hostPage.goto(`${base}/host`, { waitUntil: 'networkidle0' });
-  await hostPage.type('#hc', code); await hostPage.type('#hp', 'host-password-1');
-  await Promise.all([hostPage.waitForNavigation({ waitUntil: 'networkidle0' }), hostPage.click('button.btn')]);
-  await new Promise((r) => setTimeout(r, 2500));
-  await shot(hostPage, '20-host-console', true);
+  await shot(hostPage, '20-host-setup');
+  const inputs = await hostPage.$$('input');
+  await inputs[1].type('host-pass-1');
+  await inputs[2].focus(); await hostPage.keyboard.press('Backspace'); await hostPage.keyboard.press('Backspace'); await inputs[2].type('12');
+  await hostPage.click('button.btn'); await hostPage.waitForFunction(() => /^\/host\/[A-Z0-9]+$/.test(location.pathname), { timeout: 20000 });
+  await sleep(1500);
+  const code = new URL(hostPage.url()).pathname.split('/').pop()!;
+  const host = new Jar(base);
+  await host.call('/api/host/login', { method: 'POST', json: { password: 'host-pass-1' } });
+  const ov = await host.call(`/api/events/${code}/host/overview`);
+  const pins: Record<number, string> = Object.fromEntries(ov.teams.map((t: any) => [t.team_no, t.pin_plain]));
+  const pk = ov.event.projectorKey;
 
-  await phase('r1_judging'); await screen.reload({ waitUntil: 'networkidle0' }); await shot(screen, '13-projector-judging');
-  await new Promise((r) => setTimeout(r, 2500));
-  await phase('r1_results');
-  await screen.reload({ waitUntil: 'networkidle0' }); await shot(screen, '14-projector-results');
-  await teams[0].call('/api/logout', { method: 'POST' });
-  await me.reload({ waitUntil: 'networkidle0' }); await shot(me, '06-results', true);
-  await me.goto(`${base}/e/${code}/gallery?round=1`, { waitUntil: 'networkidle0' }); await shot(me, '07-gallery');
+  const pinPage = await page(1100, 900);
+  await pinPage.goto(`${base}/host/${code}/pins`, { waitUntil: 'networkidle0' });
+  await shot(pinPage, '24-pin-slips');
 
-  await phase('r2_brief'); await phase('r2_open');
-  await screen.reload({ waitUntil: 'networkidle0' }); await shot(screen, '15-projector-round2-live');
-  for (let i = 1; i < 10; i++) { const f = new FormData(); const a = await art(40 + i); for (const k of ['full', 'judge', 'thumb']) f.set(k, new Blob([a]), 'a.webp'); await teams[i].call(`/api/events/${code}/submit`, { method: 'POST', body: f }).catch(() => {}); }
-  await new Promise((r) => setTimeout(r, 3000));
-  await phase('r2_judging'); await phase('r2_results'); await phase('final');
-  await screen.reload({ waitUntil: 'networkidle0' }); await new Promise((r) => setTimeout(r, 3000)); await shot(screen, '16-projector-final');
-  await browser.close();
-  srv.close();
-  process.exit(0);
+  // phone: bare link → join → name
+  const phone = await page(390, 844, true);
+  await phone.goto(base, { waitUntil: 'networkidle0' });
+  await sleep(800);
+  await phone.type('#no', '1'); await phone.type('#pin', pins[1]);
+  await shot(phone, '01-join');
+  await phone.click('button.btn'); await phone.waitForFunction(() => location.pathname.endsWith('/play'), { timeout: 20000 });
+  await shot(phone, '02-name-team');
+  await phone.type('input', 'Glitch Gurus');
+  await phone.click('button.btn'); await sleep(1500);
+
+  const names = ['Render Rangers', 'Prompt Pirates', 'Latent Legends', 'Diffusion Divas', 'Token Titans', 'Neural Nomads', 'Seed Squad'];
+  const teams: Jar[] = [];
+  for (let i = 0; i < names.length; i++) {
+    const j = new Jar(base);
+    await j.call(`/api/events/${code}/join`, { method: 'POST', json: { teamNo: i + 2, pin: pins[i + 2] } });
+    await j.call(`/api/events/${code}/team-name`, { method: 'POST', json: { name: names[i] } });
+    teams.push(j);
+  }
+  const screen = await page(1920, 1080);
+  await screen.goto(`${base}/e/${code}/screen?pk=${pk}`, { waitUntil: 'networkidle0' });
+  await shot(screen, '10-screen-lobby');
+  await hostPage.reload({ waitUntil: 'networkidle0' }); await sleep(1200);
+  await shot(hostPage, '21-host-lobby', true);
+
+  // Round 1 spin
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'spin1' } });
+  await sleep(6500); await screen.bringToFront(); await sleep(100);
+  await screen.screenshot({ path: `${OUT}/11-screen-wheel.png` }); console.log('shot 11-screen-wheel');
+  await sleep(4500);
+  await screen.screenshot({ path: `${OUT}/12-screen-memorise.png` }); console.log('shot 12-screen-memorise');
+  await phone.bringToFront(); await phone.reload({ waitUntil: 'networkidle0' }); await sleep(300);
+  await phone.screenshot({ path: `${OUT}/03-phone-memorise.png` }); console.log('shot 03-phone-memorise');
+  await sleep(7000);
+  for (let i = 0; i < teams.length; i++) { const f = new FormData(); const a = await art(i); for (const k of ['full', 'judge', 'thumb']) f.set(k, new Blob([a]), 'a.webp'); f.set('prompt', `moody cinematic scene, variant ${i}`); await teams[i].call(`/api/events/${code}/submit`, { method: 'POST', body: f }); }
+  await sleep(1500);
+  await screen.reload({ waitUntil: 'networkidle0' }); await shot(screen, '13-screen-countdown');
+  await phone.reload({ waitUntil: 'networkidle0' }); await shot(phone, '04-phone-drop', true);
+  await hostPage.reload({ waitUntil: 'networkidle0' }); await sleep(1500); await shot(hostPage, '22-host-live');
+
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'end' } });
+  await sleep(3000);
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'reveal' } });
+  await screen.reload({ waitUntil: 'networkidle0' }); await sleep(2500); await shot(screen, '14-screen-results');
+  await hostPage.reload({ waitUntil: 'networkidle0' }); await sleep(1500); await shot(hostPage, '23-host-results');
+
+  // Round 2
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'spin2' } });
+  await sleep(6500); await screen.bringToFront(); await screen.screenshot({ path: `${OUT}/15-screen-reels.png` }); console.log('shot 15-screen-reels');
+  await sleep(9000);
+  await screen.screenshot({ path: `${OUT}/16-screen-r2-countdown.png` }); console.log('shot 16-screen-r2-countdown');
+  for (let i = 0; i < teams.length; i++) { const f = new FormData(); const a = await art(30 + i); for (const k of ['full', 'judge', 'thumb']) f.set(k, new Blob([a]), 'a.webp'); await teams[i].call(`/api/events/${code}/submit`, { method: 'POST', body: f }); }
+  await sleep(3000);
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'end' } });
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'final' } });
+  await screen.reload({ waitUntil: 'networkidle0' }); await sleep(3800); await shot(screen, '17-screen-final');
+  await phone.reload({ waitUntil: 'networkidle0' }); await shot(phone, '05-phone-final');
+  await browser.close(); srv.close(); process.exit(0);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

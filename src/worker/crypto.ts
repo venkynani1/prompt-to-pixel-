@@ -38,6 +38,10 @@ export async function hashSecret(secret: string, iterations = 20000): Promise<st
 }
 
 export async function verifySecret(secret: string, stored: string): Promise<boolean> {
+  if (stored.startsWith('sha$')) { // host-issued 4-digit team PINs (salted SHA-256; lockout stops brute force)
+    const [, salt, hash] = stored.split('$');
+    return safeEqual(await sha256Hex(salt + secret), hash);
+  }
   const [algo, iter, saltHex, hash] = stored.split('$');
   if (algo !== 'pbkdf2' || !iter || !saltHex || !hash) return false;
   const salt = new Uint8Array(saltHex.match(/../g)!.map((h) => parseInt(h, 16)));

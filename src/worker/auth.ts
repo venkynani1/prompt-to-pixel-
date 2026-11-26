@@ -66,7 +66,7 @@ export async function registerTeam(ctx: AppContext, event: { id: string; registr
   const pinHash = await hashSecret(pin, ctx.pinIterations);
   try {
     await ctx.db.batch([
-      { text: `INSERT INTO teams(id,event_id,name,name_key,anon_label) VALUES($1,$2,$3,$4,$5)`, params: [teamId, event.id, name, key, `Entry ${n + 1}`] },
+      { text: `INSERT INTO teams(id,event_id,name,name_key,anon_label,joined_at) VALUES($1,$2,$3,$4,$5,now())`, params: [teamId, event.id, name, key, `Entry ${n + 1}`] },
       { text: `INSERT INTO team_credentials(team_id,pin_hash) VALUES($1,$2)`, params: [teamId, pinHash] },
       { text: `UPDATE events SET state_version=state_version+1 WHERE id=$1`, params: [event.id] },
     ]);
@@ -94,8 +94,48 @@ export async function loginTeam(ctx: AppContext, eventId: string, rawName: strin
       [row.id, fails, lockSec]);
     throw new HttpError(401, 'Team name or PIN is wrong');
   }
-  await ctx.db.query(`UPDATE team_credentials SET failed_attempts=0, locked_until=NULL WHERE team_id=$1`, [row.id]);
+  await ctx.db.batch([
+    { text: `UPDATE team_credentials SET failed_attempts=0, locked_until=NULL WHERE team_id=$1`, params: [row.id] },
+    { text: `UPDATE teams SET joined_at=coalesce(joined_at, now()) WHERE id=$1`, params: [row.id] },
+  ]);
   return { teamId: row.id as string, name: row.name as string, token: await createSession(ctx, eventId, 'team', row.id) };
+}
+
+/** Join with a host-issued team number + PIN (BID WARS style). Marks the team as joined. */
+export async function joinTeam(ctx: AppContext, eventId: string, teamNo: number, pin: string) {
+  const [row] = await ctx.db.query<any>(
+    `SELECT t.id, t.name, t.named, t.disabled, c.pin_hash, c.failed_attempts, (c.locked_until > now()) AS locked
+     FROM teams t JOIN team_credentials c ON c.team_id=t.id WHERE t.event_id=$1 AND t.team_no=$2`, [eventId, teamNo]);
+  if (!row || row.disabled) throw new HttpError(401, 'Team number or PIN is wrong');
+  if (row.locked) throw new HttpError(429, 'Too many wrong PINs — wait a minute or ask the host');
+  if (!(await verifySecret(pin, row.pin_hash))) {
+    const fails = row.failed_attempts + 1;
+    const lockSec = fails % 5 === 0 ? Math.min(1800, 60 * 2 ** (fails / 5 - 1)) : 0;
+    await ctx.db.query(
+      `UPDATE team_credentials SET failed_attempts=$2, locked_until = CASE WHEN $3 > 0 THEN now()+make_interval(secs => $3) ELSE locked_until END, updated_at=now() WHERE team_id=$1`,
+      [row.id, fails, lockSec]);
+    throw new HttpError(401, 'Team number or PIN is wrong');
+  }
+  await ctx.db.batch([
+    { text: `UPDATE team_credentials SET failed_attempts=0, locked_until=NULL WHERE team_id=$1`, params: [row.id] },
+    { text: `UPDATE teams SET joined_at=coalesce(joined_at, now()) WHERE id=$1`, params: [row.id] },
+    { text: `UPDATE events SET state_version=state_version+1 WHERE id=$1`, params: [eventId] },
+  ]);
+  return { teamId: row.id as string, name: row.name as string, named: row.named as boolean, token: await createSession(ctx, eventId, 'team', row.id) };
+}
+
+export async function renameTeam(ctx: AppContext, eventId: string, teamId: string, rawName: string) {
+  const { name, key } = normaliseTeamName(rawName);
+  try {
+    await ctx.db.batch([
+      { text: `UPDATE teams SET name=$3, name_key=$4, named=true WHERE id=$1 AND event_id=$2`, params: [teamId, eventId, name, key] },
+      { text: `UPDATE events SET state_version=state_version+1 WHERE id=$1`, params: [eventId] },
+    ]);
+  } catch (e) {
+    if (/unique|duplicate/i.test(String(e))) throw new HttpError(409, 'Another team already has that name');
+    throw e;
+  }
+  return name;
 }
 
 /** Host login has a global per-event lockout too (stored on a pseudo team-less credential via audit counting). */

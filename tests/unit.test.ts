@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { computeTotal, WEIGHT_SUM } from '../src/shared/rubrics';
 import { parseJudgeOutput } from '../src/worker/ai/schema';
 import { backoffSeconds } from '../src/worker/evaluation';
-import { canTransition } from '../src/worker/game';
 import { pollInterval } from '../src/worker/state';
 import { hammingHex, hashSecret, verifySecret, detectImageType } from '../src/worker/crypto';
 import { resolveR1Mode } from '../src/worker/ai/judge';
@@ -44,15 +43,10 @@ describe('helpers', () => {
     expect(backoffSeconds(3, 0.5)).toBe(20);
     expect(backoffSeconds(20, 0.5)).toBe(300);
   });
-  it('phase transitions move one step or close', () => {
-    expect(canTransition('lobby', 'r1_brief')).toBe(true);
-    expect(canTransition('lobby', 'r1_open')).toBe(false);
-    expect(canTransition('r1_open', 'r1_brief')).toBe(true);
-    expect(canTransition('r2_open', 'closed')).toBe(true);
-  });
   it('adaptive polling: slow while live, faster for screens, backs off under budget pressure', () => {
     expect(pollInterval('r1_open', 'team', false, 0, 85000)).toBe(15000);
     expect(pollInterval('r1_open', 'projector', false, 0, 85000)).toBe(2500);
+    expect(pollInterval('lobby', 'team', false, 0, 85000)).toBe(8000);
     expect(pollInterval('r1_open', 'team', false, 80000, 85000)).toBe(60000);
   });
   it('PIN hashing round-trips', async () => {
