@@ -23,7 +23,7 @@ export const PHASE_LABEL: Record<Phase, string> = {
 };
 
 export type SubmissionStatus =
-  | 'queued' | 'evaluating' | 'scored' | 'needs_review' | 'failed' | 'paused_quota' | 'superseded' | 'rejected';
+  | 'queued' | 'evaluating' | 'scored' | 'needs_review' | 'failed' | 'paused_quota' | 'superseded' | 'rejected' | 'host_judging';
 
 export interface PublicRound {
   turnId: string;
@@ -39,6 +39,7 @@ export interface PublicRound {
   sceneId: string | null;  // round 1 scene (bank id)
   concepts: string[];      // round 2 [genre, hero, setting]
   revealed: boolean;
+  judgeMode: 'ai' | 'host'; // who scores this spin
 }
 
 export interface LeaderRow {
@@ -46,6 +47,7 @@ export interface LeaderRow {
   name: string;
   r1: number | null;
   r2: number | null;
+  bonus: number;           // Mystery round points
   total: number;
   rank: number;
 }
@@ -67,6 +69,7 @@ export interface StateResponse {
   serverNow: string;
   pollMs: number;
   event: { code: string; name: string; phase: Phase; registrationOpen: boolean; teamCount: number };
+  mystery: { title: string | null; since: string; awards: MysteryAward[] } | null; // a Mystery round is on: spins paused
   round: PublicRound | null;   // the current (latest) spin
   progress: { submitted: number; scored: number; pending: number; failed: number } | null;
   leaderboard: LeaderRow[] | null;   // revealed scores only
@@ -77,3 +80,5 @@ export interface StateResponse {
     total: number; rank: number | null;
   };
 }
+
+export interface MysteryAward { id: string; teamId: string; teamNo: number | null; name: string; points: number; note: string | null }

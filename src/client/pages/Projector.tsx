@@ -2,7 +2,7 @@ import QRCode from 'qrcode';
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import type { LeaderRow } from '../../shared/types';
+import type { LeaderRow, StateResponse } from '../../shared/types';
 import { MashupReels, SceneImage, SceneWheel, stageOf, TimeBar, useFrameNow } from '../components/show';
 import { Countdown, Leaderboard, Notice, Wordmark } from '../components/ui';
 import { useEventState } from '../lib';
@@ -27,7 +27,8 @@ export function Projector() {
   if (!state) return <div className="p-16"><Notice kind={error ? 'error' : 'info'}>{error ?? 'Connecting…'}</Notice></div>;
   const { event } = state;
   const st = round ? stageOf(round, now) : null;
-  const sceneKey = `${event.phase}-${round?.turnId ?? ''}-${live ? st?.stage : ''}`;
+  const mystery = state.mystery;
+  const sceneKey = mystery ? 'mystery' : `${event.phase}-${round?.turnId ?? ''}-${live ? st?.stage : ''}`;
 
   return (
     <main className="min-h-screen px-[4vw] py-[3vh] flex flex-col">
@@ -39,7 +40,9 @@ export function Projector() {
         <motion.section key={sceneKey} className="flex-1 flex flex-col justify-center py-[3vh]"
           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
 
-          {event.phase === 'lobby' && (
+          {mystery && <MysteryScreen mystery={mystery} board={state.leaderboard} />}
+
+          {!mystery && event.phase === 'lobby' && (
             <div className="grid lg:grid-cols-[auto_1fr] items-center gap-[5vw]">
               <div className="grid justify-items-center gap-4">
                 {qr && <img src={qr} alt={`QR code to join: ${joinUrl}`} className="w-[min(30vw,480px)] rounded-3xl" />}
@@ -59,7 +62,7 @@ export function Projector() {
             </div>
           )}
 
-          {live && round && st && (
+          {!mystery && live && round && st && (
             <>
               {st.stage === 'spin' && (
                 <div className="grid gap-6 justify-items-center">
@@ -91,14 +94,14 @@ export function Projector() {
             </>
           )}
 
-          {event.phase.endsWith('_judging') && state.progress && (
+          {!mystery && event.phase.endsWith('_judging') && state.progress && (
             <div className="grid gap-12 max-w-5xl">
               <h1 className="text-[clamp(4rem,9vw,9rem)] font-extrabold">The judge is looking.</h1>
               <Progress p={state.progress} big />
             </div>
           )}
 
-          {event.phase.endsWith('_results') && round && (
+          {!mystery && event.phase.endsWith('_results') && round && (
             <div className="grid lg:grid-cols-[1fr_1.1fr] gap-[4vw] items-start">
               <div className="grid gap-5">
                 <h1 className="text-5xl font-extrabold">Standings</h1>
@@ -108,11 +111,46 @@ export function Projector() {
             </div>
           )}
 
-          {(event.phase === 'final' || event.phase === 'closed') && state.leaderboard && <Podium rows={state.leaderboard} />}
+          {!mystery && (event.phase === 'final' || event.phase === 'closed') && state.leaderboard && <Podium rows={state.leaderboard} />}
         </motion.section>
       </AnimatePresence>
       {error && <Notice kind="error">{error}</Notice>}
     </main>
+  );
+}
+
+/** Mystery round: spins paused; points roll in as the host gives them. */
+function MysteryScreen({ mystery, board }: { mystery: NonNullable<StateResponse['mystery']>; board: LeaderRow[] | null }) {
+  return (
+    <div className="grid lg:grid-cols-[1.2fr_1fr] gap-[4vw] items-start">
+      <div className="grid gap-6">
+        <div className="flex items-end gap-6">
+          <motion.span aria-hidden className="display font-extrabold text-sub-b leading-none text-[clamp(8rem,16vw,16rem)]"
+            initial={{ rotate: -12, scale: 0.6, opacity: 0 }} animate={{ rotate: 0, scale: 1, opacity: 1 }} transition={{ type: 'spring', stiffness: 120, damping: 12 }}>?</motion.span>
+          <div className="pb-[2vh]">
+            <h1 className="text-[clamp(3.5rem,7vw,7.5rem)] font-extrabold rgb-split leading-none">Mystery round</h1>
+            {mystery.title && <p className="mt-4 text-[clamp(1.8rem,3vw,3rem)] font-bold">{mystery.title}</p>}
+          </div>
+        </div>
+        <ul className="grid gap-3">
+          <AnimatePresence initial={false}>
+            {mystery.awards.slice(0, 7).map((a) => (
+              <motion.li key={a.id} layout initial={{ opacity: 0, x: -40 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}
+                className="grid grid-cols-[4ch_1fr_auto] items-baseline gap-4 rounded-2xl bg-panel px-6 py-3 text-4xl">
+                <span className="display font-extrabold tabular-nums text-muted">{a.teamNo}</span>
+                <span className="font-bold truncate">{a.name}</span>
+                <span className={`display font-extrabold tabular-nums ${a.points > 0 ? 'text-sub-g' : 'text-sub-r'}`}>{a.points > 0 ? '+' : ''}{a.points}</span>
+              </motion.li>
+            ))}
+          </AnimatePresence>
+          {mystery.awards.length === 0 && <li className="text-3xl text-muted">Points appear here as the host gives them.</li>}
+        </ul>
+      </div>
+      <div className="grid gap-5">
+        <h2 className="text-4xl font-extrabold">Standings</h2>
+        {board ? <Leaderboard rows={board} limit={8} big showRounds={false} /> : <p className="text-muted text-2xl">No scores yet.</p>}
+      </div>
+    </div>
   );
 }
 

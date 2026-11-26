@@ -34,7 +34,9 @@ function pick<T>(xs: readonly T[], avoid: T[] = []): T {
 export async function spin(ctx: AppContext, event: { id: string; phase: Phase }, roundNo: 1 | 2, actor = 'host') {
   if (event.phase.endsWith('_open')) throw new HttpError(409, 'A spin is still running — end it first');
   if (event.phase === 'final' || event.phase === 'closed') throw new HttpError(409, 'The event has finished');
-  const [s] = await ctx.db.query<any>(`SELECT * FROM host_settings WHERE event_id=$1`, [event.id]);
+  const [s] = await ctx.db.query<any>(`SELECT hs.*, e.mystery_at FROM host_settings hs JOIN events e ON e.id=hs.event_id WHERE hs.event_id=$1`, [event.id]);
+  if (s.mystery_at) throw new HttpError(409, 'Finish the Mystery round first');
+  const judgeMode = s.host_judges_next ? 'host' : 'ai';
   const used = await ctx.db.query<{ bank_item: string | null; concepts: any }>(
     `SELECT bank_item, concepts FROM round_configs WHERE event_id=$1 AND round_no=$2 AND spin_at IS NOT NULL`, [event.id, roundNo]);
   const [{ seq }] = await ctx.db.query<{ seq: number }>(
@@ -53,7 +55,7 @@ export async function spin(ctx: AppContext, event: { id: string; phase: Phase },
     if (!bytes) throw new HttpError(500, 'Scene image missing from the app bundle');
     refId = (await ctx.images.put({ eventId: event.id, kind: 'judge', bytes, contentType: 'image/jpeg' })).id;
     mode = resolveR1Mode(s.r1_mode, s.judge_model, ctx.capabilities.imagesBinding);
-    if (mode === 'reference-description') {
+    if (mode === 'reference-description' && judgeMode === 'ai') {
       const ref = await ctx.images.get(refId);
       const out = await describeReference(ctx.providers(s.judge_provider, s.judge_model), ref!);
       description = out.text;
@@ -76,23 +78,25 @@ export async function spin(ctx: AppContext, event: { id: string; phase: Phase },
     { text: `INSERT INTO round_configs(id,event_id,round_no,seq,title,brief,duration_sec,bank_item,concepts,
                reference_image_id,reference_judge_image_id,reference_description,
                spin_at,preview_from,preview_until,opens_at,deadline_at,
-               locked_provider,locked_model,locked_mode,locked_at)
+               locked_provider,locked_model,locked_mode,locked_at,judge_mode)
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$10,$11,
                now()+make_interval(secs => $18), now()+make_interval(secs => $12), now()+make_interval(secs => $13),
                now()+make_interval(secs => $13), now()+make_interval(secs => $14),
-               $15,$16,$17,now())`,
+               $15,$16,$17,now(),$19)`,
       params: [id, event.id, roundNo, seq, title, brief, duration, bankItem, JSON.stringify(concepts), refId, description,
-        LEAD_SEC + spinSec, LEAD_SEC + spinSec + previewSec, LEAD_SEC + spinSec + previewSec + duration, s.judge_provider, s.judge_model, mode, LEAD_SEC] },
+        LEAD_SEC + spinSec, LEAD_SEC + spinSec + previewSec, LEAD_SEC + spinSec + previewSec + duration, s.judge_provider, s.judge_model, mode, LEAD_SEC, judgeMode] },
     { text: `UPDATE events SET phase=$2, phase_changed_at=now(), state_version=state_version+1, registration_open=false WHERE id=$1`,
       params: [event.id, roundNo === 1 ? 'r1_open' : 'r2_open'] },
   ]);
-  await audit(ctx, event.id, actor, 'spin', { roundNo, seq, bankItem, concepts, model: s.judge_model, mode });
-  return { turnId: id, roundNo, seq, title, bankItem, concepts };
+  await audit(ctx, event.id, actor, 'spin', { roundNo, seq, bankItem, concepts, model: s.judge_model, mode, judgeMode });
+  return { turnId: id, roundNo, seq, title, bankItem, concepts, judgeMode };
 }
 
 /** The host's whole control surface: one action at a time. */
-export async function hostAction(ctx: AppContext, event: { id: string; phase: Phase }, action: string) {
+export async function hostAction(ctx: AppContext, event: { id: string; phase: Phase }, action: string, opts: { title?: string } = {}) {
   const p = event.phase;
+  const [{ mystery_at }] = await ctx.db.query<any>(`SELECT mystery_at FROM events WHERE id=$1`, [event.id]);
+  if (mystery_at && !['mystery_end', 'judge_host', 'judge_ai'].includes(action)) throw new HttpError(409, 'Finish the Mystery round first');
   const set = (to: Phase, extra: { text: string; params?: unknown[] }[] = []) => ctx.db.batch([
     ...extra,
     { text: `UPDATE events SET phase=$2, phase_changed_at=now(), state_version=state_version+1 WHERE id=$1`, params: [event.id, to] },
@@ -120,11 +124,87 @@ export async function hostAction(ctx: AppContext, event: { id: string; phase: Ph
       await set('final', [{ text: `UPDATE round_configs SET revealed_at=now() WHERE event_id=$1 AND spin_at IS NOT NULL AND revealed_at IS NULL`, params: [event.id] }]);
       break;
     }
+    case 'mystery_start': {
+      if (p.endsWith('_open')) throw new HttpError(409, 'End the running spin first');
+      await ctx.db.query(`UPDATE events SET mystery_at=now(), mystery_title=$2, state_version=state_version+1 WHERE id=$1`,
+        [event.id, opts.title?.trim().slice(0, 60) || null]);
+      break;
+    }
+    case 'mystery_end': {
+      if (!mystery_at) throw new HttpError(409, 'No Mystery round is running');
+      await ctx.db.query(`UPDATE events SET mystery_at=NULL, state_version=state_version+1 WHERE id=$1`, [event.id]);
+      break;
+    }
+    case 'judge_host': case 'judge_ai': return setJudgeMode(ctx, event.id, action === 'judge_host' ? 'host' : 'ai');
     default: throw new HttpError(404, 'Unknown action');
   }
   await refreshLeaderboard(ctx, event.id);
   await audit(ctx, event.id, 'host', `action_${action}`, { from: p });
   return { ok: true };
+}
+
+/** Switch who judges the current spin. Scores already given stay; the host can still overwrite any score. */
+export async function setJudgeMode(ctx: AppContext, eventId: string, mode: 'ai' | 'host') {
+  const cur = `(SELECT ct.id FROM round_configs ct WHERE ct.event_id=$1 AND ct.spin_at IS NOT NULL ORDER BY ct.spin_at DESC LIMIT 1)`;
+  const [turn] = await ctx.db.query<any>(`SELECT id, judge_mode FROM round_configs WHERE id=${cur}`, [eventId]);
+  if (!turn) throw new HttpError(409, 'Spin the wheel first');
+  if (mode === 'host') {
+    await ctx.db.batch([
+      { text: `UPDATE round_configs SET judge_mode='host' WHERE id=$1`, params: [turn.id] },
+      { text: `UPDATE evaluation_jobs SET status='cancelled', finished_at=now() WHERE status IN ('queued','retry','paused_quota')
+               AND submission_id IN (SELECT id FROM submissions WHERE round_id=$1)`, params: [turn.id] },
+      { text: `UPDATE submissions SET status='host_judging' WHERE round_id=$1 AND status IN ('queued','paused_quota','failed')`, params: [turn.id] },
+      { text: `UPDATE events SET state_version=state_version+1 WHERE id=$2 AND $1::uuid IS NOT NULL`, params: [turn.id, eventId] },
+    ]);
+  } else {
+    await ctx.db.batch([
+      { text: `UPDATE round_configs SET judge_mode='ai' WHERE id=$1`, params: [turn.id] },
+      { text: `UPDATE submissions SET status=CASE WHEN 'reference_copy' = ANY(flags) THEN 'needs_review' ELSE 'queued' END
+               WHERE round_id=$1 AND status='host_judging'`, params: [turn.id] },
+      { text: `INSERT INTO evaluation_jobs(submission_id,last_enqueued_at) SELECT s.id, now() FROM submissions s
+               WHERE s.round_id=$1 AND s.status='queued'
+                 AND NOT EXISTS (SELECT 1 FROM evaluation_jobs j WHERE j.submission_id=s.id AND j.status IN ('queued','running','retry','paused_quota'))`, params: [turn.id] },
+      { text: `UPDATE events SET state_version=state_version+1 WHERE id=$2 AND $1::uuid IS NOT NULL`, params: [turn.id, eventId] },
+    ]);
+    const jobs = await ctx.db.query<{ id: string; submission_id: string }>(
+      `SELECT j.id, j.submission_id FROM evaluation_jobs j JOIN submissions s ON s.id=j.submission_id WHERE s.round_id=$1 AND j.status='queued'`, [turn.id]);
+    try { if (jobs.length) await ctx.queue.sendBatch(jobs.map((j) => ({ jobId: j.id, submissionId: j.submission_id }))); }
+    catch { await ctx.db.query(`UPDATE evaluation_jobs SET last_enqueued_at=NULL WHERE id = ANY($1::uuid[])`, [jobs.map((j) => j.id)]); }
+  }
+  await audit(ctx, eventId, 'host', 'judge_mode', { turnId: turn.id, mode });
+  return { ok: true, judgeMode: mode };
+}
+
+/** The host's own score for one image (0–100). Overrides the AI; a late AI result can no longer replace it. */
+export async function hostScore(ctx: AppContext, eventId: string, submissionId: string, score: number) {
+  const done = await ctx.db.batch([
+    { text: `UPDATE evaluation_jobs SET status='cancelled', finished_at=now() WHERE submission_id=$1 AND status IN ('queued','retry','paused_quota')`, params: [submissionId] },
+    { text: `UPDATE evaluation_results SET is_published=false WHERE submission_id=$1 AND submission_id IN (SELECT id FROM submissions WHERE event_id=$2)`, params: [submissionId, eventId] },
+    { text: `UPDATE submissions SET status='scored', score_total=$3, scored_at=now(),
+               flags = array_append(array_remove(flags,'host_scored'),'host_scored')
+             WHERE id=$1 AND event_id=$2 AND status<>'superseded' RETURNING id`, params: [submissionId, eventId, score] },
+  ]);
+  if (!done[2].length) throw new HttpError(404, 'Submission not found');
+  await refreshLeaderboard(ctx, eventId);
+  await audit(ctx, eventId, 'host', 'host_score', { submissionId, score });
+}
+
+/** Mystery round points, by team number. Negative points are allowed (penalties). */
+export async function addBonus(ctx: AppContext, eventId: string, teamNo: number, points: number, note?: string) {
+  const [t] = await ctx.db.query<any>(`SELECT id, name FROM teams WHERE event_id=$1 AND team_no=$2 AND joined_at IS NOT NULL AND NOT disabled`, [eventId, teamNo]);
+  if (!t) throw new HttpError(404, `Team ${teamNo} hasn't joined`);
+  const [row] = await ctx.db.query<any>(`INSERT INTO bonus_points(event_id,team_id,points,note) VALUES($1,$2,$3,$4) RETURNING id`,
+    [eventId, t.id, points, note?.trim().slice(0, 80) || null]);
+  await refreshLeaderboard(ctx, eventId);
+  await audit(ctx, eventId, 'host', 'bonus', { teamNo, points, note });
+  return { id: row.id as string, team: t.name as string };
+}
+
+export async function removeBonus(ctx: AppContext, eventId: string, id: string) {
+  const del = await ctx.db.query(`DELETE FROM bonus_points WHERE id=$1 AND event_id=$2 RETURNING points`, [id, eventId]);
+  if (!del.length) throw new HttpError(404, 'Already removed');
+  await refreshLeaderboard(ctx, eventId);
+  await audit(ctx, eventId, 'host', 'bonus_removed', { id });
 }
 
 /** Lazily close a spin whose server deadline has passed (cron does the same every minute). */
@@ -230,7 +310,7 @@ export interface SubmissionFiles {
 
 export async function createSubmission(ctx: AppContext, eventId: string, teamId: string, files: SubmissionFiles) {
   const [ev] = await ctx.db.query<any>(
-    `SELECT e.phase, r.id AS round_id, r.round_no, r.deadline_at,
+    `SELECT e.phase, r.id AS round_id, r.round_no, r.deadline_at, r.judge_mode,
             (r.deadline_at + interval '5 seconds' > now()) AS in_time,
             (now() >= CASE WHEN r.round_no=1 THEN r.preview_until ELSE r.preview_from END) AS started,
             ri.sha256 AS reference_sha, hs.max_upload_bytes, hs.max_submissions_per_round, hs.storage_byte_cap, hs.bytea_byte_cap
@@ -273,7 +353,9 @@ export async function createSubmission(ctx: AppContext, eventId: string, teamId:
   if (others.some((o) => o.sha256 === full.sha256)) flags.push('duplicate_exact');
   else if (dh && others.some((o) => o.dhash && hammingHex(dh, o.dhash) <= 4)) flags.push('near_duplicate');
 
-  const skipAi = flags.includes('reference_copy');
+  const hostJudges = ev.judge_mode === 'host';
+  const skipAi = hostJudges || flags.includes('reference_copy');
+  const initial = hostJudges ? 'host_judging' : skipAi ? 'needs_review' : 'queued';
   const submissionId = crypto.randomUUID();
   const jobId = crypto.randomUUID();
   const stmts = [
@@ -284,7 +366,7 @@ export async function createSubmission(ctx: AppContext, eventId: string, teamId:
     { text: `INSERT INTO submissions(id,event_id,round_id,team_id,image_id,judge_image_id,thumb_image_id,prompt_text,dhash,status,flags)
              VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
       params: [submissionId, eventId, ev.round_id, teamId, full.id, judge.id, thumb.id, files.prompt?.trim() || null, dh,
-        skipAi ? 'needs_review' : 'queued', flags] },
+        initial, flags] },
     { text: `UPDATE events SET state_version=state_version+1 WHERE id=$1`, params: [eventId] },
   ];
   // transactional job creation: the job row commits atomically with the submission
@@ -296,7 +378,7 @@ export async function createSubmission(ctx: AppContext, eventId: string, teamId:
     try { await ctx.queue.send({ jobId, submissionId }); }
     catch { await ctx.db.query(`UPDATE evaluation_jobs SET last_enqueued_at=NULL WHERE id=$1`, [jobId]); } // cron will pick it up
   }
-  return { submissionId, flags, status: skipAi ? 'needs_review' : 'queued' };
+  return { submissionId, flags, status: initial };
 }
 
 export async function requeueSubmission(ctx: AppContext, eventId: string, submissionId: string) {
@@ -320,14 +402,14 @@ export async function requeueSubmission(ctx: AppContext, eventId: string, submis
 
 /** Explicit, audited re-judge of every spin in a round with a new provider/model. Never automatic. */
 export async function rejudgeRound(ctx: AppContext, eventId: string, roundNo: 1 | 2, provider: string, model: string, mode: string) {
-  const turns = `SELECT id FROM round_configs WHERE event_id=$1 AND round_no=$2 AND spin_at IS NOT NULL`;
+  const turns = `SELECT id FROM round_configs WHERE event_id=$1 AND round_no=$2 AND spin_at IS NOT NULL AND judge_mode='ai'`;
   const subs = `SELECT id FROM submissions WHERE round_id IN (${turns})`;
   await ctx.db.batch([
     { text: `UPDATE round_configs SET locked_provider=$3, locked_model=$4, locked_mode=$5, locked_at=now() WHERE id IN (${turns})`, params: [eventId, roundNo, provider, model, mode] },
     { text: `UPDATE evaluation_jobs SET status='cancelled', finished_at=now() WHERE status IN ('queued','retry','paused_quota','running') AND submission_id IN (${subs})`, params: [eventId, roundNo] },
     { text: `UPDATE evaluation_results SET is_published=false WHERE submission_id IN (${subs})`, params: [eventId, roundNo] },
     { text: `UPDATE submissions SET status='queued', score_total=NULL, scored_at=NULL
-             WHERE round_id IN (${turns}) AND status NOT IN ('superseded','rejected') AND NOT ('reference_copy' = ANY(flags))`, params: [eventId, roundNo] },
+             WHERE round_id IN (${turns}) AND status NOT IN ('superseded','rejected') AND NOT ('reference_copy' = ANY(flags)) AND NOT ('host_scored' = ANY(flags))`, params: [eventId, roundNo] },
     { text: `INSERT INTO evaluation_jobs(submission_id,last_enqueued_at) SELECT id, now() FROM submissions WHERE round_id IN (${turns}) AND status='queued'`, params: [eventId, roundNo] },
   ]);
   const jobs = await ctx.db.query<{ id: string; submission_id: string }>(

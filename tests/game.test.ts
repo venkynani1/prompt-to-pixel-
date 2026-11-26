@@ -347,3 +347,126 @@ describe('BID WARS-style claiming', () => {
     expect(st[0].taken).toBe(true);
   });
 });
+
+describe('host judging and Mystery rounds', () => {
+  it('the host judges a spin by hand: no AI calls, host scores count, switching both ways works', async () => {
+    const h = await makeHarness();
+    const { host, code } = await startShow(h, 3);
+    const a = await joinAs(h, code, 1, '4826', 'Alpha');
+    const b = await joinAs(h, code, 2, '5937', 'Bravo');
+
+    // choose "Me" before the spin
+    expect((await host.json(`/api/events/${code}/host/settings`, { method: 'PUT', json: { host_judges_next: true } })).status).toBe(200);
+    await act(host, code, 'spin1');
+    let st = await host.json(`/api/events/${code}/state`);
+    expect(st.body.round.judgeMode).toBe('host');
+    await skipPreview(h);
+    h.calls.length = 0;
+    const up = await a.json(`/api/events/${code}/submit`, { method: 'POST', body: await submitForm(await webp('#e11')) });
+    expect(up.body.status).toBe('host_judging');
+    await b.json(`/api/events/${code}/submit`, { method: 'POST', body: await submitForm(await webp('#11e')) });
+    expect(await h.drain()).toEqual([]);           // nothing queued for the AI
+    expect(h.calls).toHaveLength(0);
+    expect((await a.json(`/api/events/${code}/state`)).body.me.current.status).toBe('queued'); // teams just see "waiting for the judge"
+
+    const ov = (await host.json(`/api/events/${code}/host/overview`)).body;
+    const subA = ov.submissions.find((s: any) => s.team === 'Alpha');
+    const subB = ov.submissions.find((s: any) => s.team === 'Bravo');
+    expect((await host.json(`/api/events/${code}/host/submissions/${subA.id}/score`, { method: 'POST', json: { score: 101 } })).status).toBe(400);
+    expect((await a.json(`/api/events/${code}/host/submissions/${subA.id}/score`, { method: 'POST', json: { score: 90 } })).status).toBe(401);
+    expect((await host.json(`/api/events/${code}/host/submissions/${subA.id}/score`, { method: 'POST', json: { score: 90 } })).status).toBe(200);
+    expect((await host.json(`/api/events/${code}/host/submissions/${subB.id}/score`, { method: 'POST', json: { score: 40 } })).status).toBe(200);
+    expect((await host.json(`/api/events/${code}/host/submissions/${subB.id}/score`, { method: 'POST', json: { score: 55.5 } })).status).toBe(200); // change of mind
+    await act(host, code, 'end');
+    await act(host, code, 'reveal');
+    st = await a.json(`/api/events/${code}/state`);
+    expect(st.body.me.current.score).toBe(90);
+    expect(st.body.leaderboard.map((r: any) => [r.name, r.total])).toEqual([['Alpha', 90], ['Bravo', 55.5]]);
+
+    // next spin: back to AI, then switch to hand judging AFTER the spin started
+    await host.json(`/api/events/${code}/host/settings`, { method: 'PUT', json: { host_judges_next: false } });
+    await act(host, code, 'spin1');
+    expect((await host.json(`/api/events/${code}/state`)).body.round.judgeMode).toBe('ai');
+    await skipPreview(h);
+    await a.json(`/api/events/${code}/submit`, { method: 'POST', body: await submitForm(await webp('#e12')) });
+    expect((await act(host, code, 'judge_host')).status).toBe(200);
+    expect(await h.drain()).toEqual(['skip']);     // the queued AI job was cancelled
+    expect(h.calls).toHaveLength(0);
+    let ov2 = (await host.json(`/api/events/${code}/host/overview`)).body;
+    expect(ov2.submissions[0].status).toBe('host_judging');
+
+    // ...and back to the AI: the waiting image goes to the AI judge
+    expect((await act(host, code, 'judge_ai')).status).toBe(200);
+    expect(await h.drain()).toEqual(['done']);
+    ov2 = (await host.json(`/api/events/${code}/host/overview`)).body;
+    expect(ov2.submissions[0].status).toBe('scored');
+
+    // the host can overwrite an AI score; the AI feedback is withdrawn
+    await host.json(`/api/events/${code}/host/submissions/${ov2.submissions[0].id}/score`, { method: 'POST', json: { score: 12 } });
+    await act(host, code, 'end'); await act(host, code, 'reveal');
+    st = await a.json(`/api/events/${code}/state`);
+    expect(st.body.me.current.score).toBe(12);
+    expect(st.body.me.current.criteria).toBeNull();
+    expect(st.body.me.total).toBe(102);
+  });
+
+  it('a late AI result never replaces a host score', async () => {
+    const h = await makeHarness();
+    const { host, code } = await startShow(h, 2);
+    const a = await joinAs(h, code, 1, '4826', 'Alpha');
+    await act(host, code, 'spin1'); await skipPreview(h);
+    await a.json(`/api/events/${code}/submit`, { method: 'POST', body: await submitForm(await webp('#e11')) });
+    const [sub] = await h.db.query<any>(`SELECT id FROM submissions`);
+    // the host types a score while the AI call is in flight
+    h.setReply(async () => {
+      expect((await host.json(`/api/events/${code}/host/submissions/${sub.id}/score`, { method: 'POST', json: { score: 33 } })).status).toBe(200);
+      return { text: goodR1(9) };
+    });
+    expect(await h.drain()).toEqual(['done']);
+    const [s] = await h.db.query<any>(`SELECT status, score_total::float AS score FROM submissions WHERE id=$1`, [sub.id]);
+    expect(s).toEqual({ status: 'scored', score: 33 });
+    expect((await h.db.query(`SELECT 1 FROM evaluation_results WHERE is_published`)).length).toBe(0);
+  });
+
+  it('Mystery round pauses spins, gives points by team number, undo works, totals include them', async () => {
+    const h = await makeHarness();
+    const { host, code } = await startShow(h, 3);
+    const a = await joinAs(h, code, 1, '4826', 'Alpha');
+    await joinAs(h, code, 2, '5937', 'Bravo');
+
+    await act(host, code, 'spin1');
+    expect((await act(host, code, 'mystery_start')).status).toBe(409);      // not during a running spin
+    await act(host, code, 'end');
+    const m = await host.json(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'mystery_start', title: 'Guess the movie' } });
+    expect(m.status).toBe(200);
+    expect((await act(host, code, 'spin1')).status).toBe(409);              // spins paused
+    expect((await act(host, code, 'reveal')).status).toBe(409);
+
+    let st = await h.client().json(`/api/events/${code}/state`);
+    expect(st.body.mystery.title).toBe('Guess the movie');
+    expect(st.body.mystery.awards).toEqual([]);
+
+    const bonus = (teamNo: number, points: number) => host.json(`/api/events/${code}/host/bonus`, { method: 'POST', json: { teamNo, points } });
+    expect((await bonus(3, 10)).status).toBe(404);                           // Team 3 hasn't joined
+    expect((await bonus(1, 0)).status).toBe(400);
+    expect((await a.json(`/api/events/${code}/host/bonus`, { method: 'POST', json: { teamNo: 1, points: 50 } })).status).toBe(401);
+    expect((await bonus(1, 50)).status).toBe(200);
+    const wrong = await bonus(2, 25);
+    expect((await bonus(1, -10)).status).toBe(200);
+    expect((await host.json(`/api/events/${code}/host/bonus/${wrong.body.id}`, { method: 'DELETE' })).status).toBe(200);
+    await bonus(2, 20);
+
+    st = await a.json(`/api/events/${code}/state`);
+    expect(st.body.mystery.awards.map((x: any) => [x.teamNo, x.points])).toEqual([[2, 20], [1, -10], [1, 50]]);
+    expect(st.body.me.total).toBe(40);
+    expect(st.body.leaderboard.map((r: any) => [r.name, r.bonus, r.total])).toEqual([['Alpha', 40, 40], ['Bravo', 20, 20]]);
+
+    expect((await act(host, code, 'mystery_end')).status).toBe(200);
+    st = await a.json(`/api/events/${code}/state`);
+    expect(st.body.mystery).toBeNull();
+    expect(st.body.me.total).toBe(40);                                     // points stay after the mystery ends
+    expect((await act(host, code, 'spin1')).status).toBe(200);              // resumed
+    const [lb] = await h.db.query<any>(`SELECT total::float AS t FROM leaderboard_entries l JOIN teams t ON t.id=l.team_id WHERE t.name='Alpha'`);
+    expect(lb.t).toBe(40);
+  });
+});

@@ -12,6 +12,7 @@ import { aiBudgetAvailable, refreshLeaderboard } from './evaluation';
 import {
   audit, claimTeam, createSubmission, ensureTeams, hostAction, HttpError, newPinFor, rejudgeRound,
   requeueSubmission, startEvent,
+  addBonus, hostScore, removeBonus,
 } from './game';
 import { buildState, idx } from './state';
 import type { ContentType } from './storage';
@@ -307,7 +308,7 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
     const ctx = c.get('ctx');
     const [settings, turns, teams, subs, auditRows, storage, dbSize] = await ctx.db.batch([
       { text: `SELECT * FROM host_settings WHERE event_id=$1`, params: [e.id] },
-      { text: `SELECT id, round_no, seq, title, bank_item, concepts, spin_at, preview_from, preview_until, deadline_at, revealed_at, locked_model, locked_mode
+      { text: `SELECT id, round_no, seq, title, bank_item, concepts, spin_at, preview_from, preview_until, deadline_at, revealed_at, locked_model, locked_mode, judge_mode
                FROM round_configs WHERE event_id=$1 AND spin_at IS NOT NULL ORDER BY spin_at DESC`, params: [e.id] },
       { text: `SELECT t.id, t.team_no, t.name, t.named, t.disabled, t.joined_at, c.pin_plain, c.locked_until,
                  (SELECT count(*)::int FROM auth_sessions a WHERE a.team_id=t.id AND NOT a.revoked AND a.expires_at>now()) AS sessions
@@ -347,8 +348,35 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
   /** One endpoint for the whole show: spin1 | spin2 | end | reveal | final */
   app.post('/events/:code/host/action', async (c) => {
     const e = await requireHost(c);
-    const b = await body(c, z.object({ action: z.enum(['spin1', 'spin2', 'end', 'reveal', 'final']) }));
-    return c.json(await hostAction(c.get('ctx'), e, b.action));
+    const b = await body(c, z.object({
+      action: z.enum(['spin1', 'spin2', 'end', 'reveal', 'final', 'mystery_start', 'mystery_end', 'judge_host', 'judge_ai']),
+      title: z.string().max(60).optional(),
+    }));
+    return c.json(await hostAction(c.get('ctx'), e, b.action, { title: b.title }));
+  });
+
+  /** Mystery round points by team number */
+  app.post('/events/:code/host/bonus', async (c) => {
+    const e = await requireHost(c);
+    const b = await body(c, z.object({ teamNo: z.number().int().min(1).max(500), points: z.number().int().min(-1000).max(1000).refine((x) => x !== 0, 'Points cannot be 0'), note: z.string().max(80).optional() }));
+    return c.json(await addBonus(c.get('ctx'), e.id, b.teamNo, b.points, b.note));
+  });
+  app.delete('/events/:code/host/bonus/:id', async (c) => {
+    const e = await requireHost(c);
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, 'Not found');
+    await removeBonus(c.get('ctx'), e.id, id);
+    return c.json({ ok: true });
+  });
+
+  /** The host's own score for one image */
+  app.post('/events/:code/host/submissions/:id/score', async (c) => {
+    const e = await requireHost(c);
+    const id = c.req.param('id');
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, 'Not found');
+    const b = await body(c, z.object({ score: z.number().min(0).max(100) }));
+    await hostScore(c.get('ctx'), e.id, id, Math.round(b.score * 2) / 2);
+    return c.json({ ok: true });
   });
 
   app.post('/events/:code/host/registration', async (c) => {
@@ -378,6 +406,7 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
       ai_neuron_daily_cap: z.number().int().min(0).max(10000).optional(),      // can never exceed the free allocation (10,000)
       request_daily_cap: z.number().int().min(1000).max(100000).optional(),
       max_submissions_per_round: z.number().int().min(1).max(5).optional(),
+      host_judges_next: z.boolean().optional(),
       r1_preview_sec: z.number().int().min(3).max(30).optional(),
       r1_duration_sec: z.number().int().min(60).max(1800).optional(),
       r2_duration_sec: z.number().int().min(60).max(1800).optional(),

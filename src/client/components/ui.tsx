@@ -75,7 +75,7 @@ export function Leaderboard({ rows, highlight, limit = 50, big = false, showRoun
             <span className={`display font-extrabold tabular-nums ${i === 0 ? 'text-sub-g' : i === 1 ? 'text-sub-b' : i === 2 ? 'text-sub-r' : 'text-muted'}`}>{r.rank}</span>
             <span className="truncate font-bold">{r.name}</span>
             <span className="tabular-nums text-right">
-              {showRounds && <span className="text-muted text-[0.7em] mr-3">{r.r1 ?? '–'}{r.r2 !== null ? ` + ${r.r2}` : ''}</span>}
+              {showRounds && <span className="text-muted text-[0.7em] mr-3">{r.r1 ?? '–'}{r.r2 !== null ? ` + ${r.r2}` : ''}{r.bonus ? ` ${r.bonus > 0 ? '+' : '−'} ${Math.abs(r.bonus)} mystery` : ''}</span>}
               <span className="display font-extrabold">{r.total.toFixed(1)}</span>
             </span>
           </motion.li>
@@ -89,7 +89,7 @@ export function StatusPill({ status }: { status: string }) {
   const map: Record<string, [string, string]> = {
     queued: ['Waiting for the judge', 'text-muted'], evaluating: ['Judging now', 'text-sub-b'], scored: ['Judged', 'text-sub-g'],
     needs_review: ['Held for review', 'text-warn'], failed: ['Judging failed', 'text-sub-r'], paused_quota: ['Paused (AI quota)', 'text-warn'],
-    rejected: ['Rejected', 'text-sub-r'], superseded: ['Replaced', 'text-muted'],
+    rejected: ['Rejected', 'text-sub-r'], superseded: ['Replaced', 'text-muted'], host_judging: ['Waiting for your score', 'text-warn'],
   };
   const [label, cls] = map[status] ?? [status, 'text-muted'];
   return <span className={`text-sm font-bold ${cls}`}>{label}</span>;

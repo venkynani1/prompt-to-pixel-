@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { MODELS_LABEL } from '../../shared/models-label';
-import type { Phase } from '../../shared/types';
+import type { Phase, StateResponse } from '../../shared/types';
 import { stageOf } from '../components/show';
 import { Notice, Shell, StatusPill, Wordmark } from '../components/ui';
 import { api, ApiError, fmtClock, useEventState, useNow } from '../lib';
@@ -99,7 +99,8 @@ export function HostDashboard() {
     catch (e) { setMsg({ kind: 'error', text: (e as Error).message }); }
     finally { setBusy(false); }
   };
-  const go = (action: string) => act(() => api(`/api/events/${code}/host/action`, { method: 'POST', json: { action } }));
+  const go = (action: string, extra: object = {}) => act(() => api(`/api/events/${code}/host/action`, { method: 'POST', json: { action, ...extra } }));
+  const [mysteryForm, setMysteryForm] = useState<string | null>(null);
 
   if (!ov || !state) return <Shell><Wordmark size="sm" /><div className="mt-10"><Notice kind={err ? 'error' : 'info'}>{err ?? 'Loading console…'}</Notice></div></Shell>;
 
@@ -125,6 +126,11 @@ export function HostDashboard() {
       : st.stage === 'open' ? <><b className="display text-4xl tabular-nums">{fmtClock(st.msLeft)}</b> left. {p?.submitted ?? 0} of {joined} teams dropped an image, {p?.scored ?? 0} judged.</>
       : 'Time is up — closing…';
     primary = { label: 'End now', run: () => go('end'), danger: true };
+  } else if (phase.endsWith('_judging') && round?.judgeMode === 'host') {
+    title = 'Your turn to judge';
+    const left = (p?.submitted ?? 0) - (p?.scored ?? 0);
+    detail = <>You've scored {p?.scored ?? 0} of {p?.submitted ?? 0} images. {left > 0 ? `Give the other ${left} a score below, then show the scores.` : 'All scored. Show the scores when ready.'}</>;
+    primary = { label: 'Show the scores', run: () => go('reveal') };
   } else if (phase.endsWith('_judging')) {
     title = 'Judging';
     detail = <>{p?.scored ?? 0} of {p?.submitted ?? 0} images judged{p?.pending ? `, ${p.pending} still with the AI` : ''}{p?.failed ? `, ${p.failed} failed (retry below)` : ''}.</>;
@@ -142,6 +148,9 @@ export function HostDashboard() {
     detail = 'The game is over. Start a fresh game from Settings below when you need one.';
   }
 
+  const mystery = state.mystery;
+  const canMystery = !mystery && !phase.endsWith('_open') && phase !== 'closed';
+  const nextHost = !!ov.settings.host_judges_next;
   const turnSubs = round ? ov.submissions.filter((s: any) => s.turn_id === round.turnId) : [];
   const attention = ov.submissions.filter((s: any) => ['needs_review', 'failed', 'paused_quota'].includes(s.status));
 
@@ -154,6 +163,9 @@ export function HostDashboard() {
         </div>
       </header>
 
+      {mystery ? (
+        <MysteryPanel code={code} name={ov.event.name} mystery={mystery} teams={ov.teams} act={act} busy={busy} msg={msg} onFinish={() => go('mystery_end')} />
+      ) : (
       <section className="mt-6 rounded-3xl bg-panel p-6 grid gap-4 sticky top-2 z-20 shadow-[0_10px_30px_rgba(10,6,30,.6)]">
         <p className="text-muted">{ov.event.name}</p>
         <h1 className="text-5xl font-extrabold">{title}</h1>
@@ -162,8 +174,37 @@ export function HostDashboard() {
         <div className="flex flex-wrap gap-3">
           {primary && <button className={`btn text-xl min-h-16 px-8 ${primary.danger ? 'btn-danger' : ''}`} disabled={busy} onClick={primary.run}>{primary.label}</button>}
           {secondary.map((s) => <button key={s.label} className="btn btn-ghost min-h-16" disabled={busy} onClick={s.run}>{s.label}</button>)}
+          {canMystery && mysteryForm === null && <button className="btn btn-ghost min-h-16 ml-auto" disabled={busy} onClick={() => setMysteryForm('')}>Start Mystery round</button>}
         </div>
+        {canMystery && mysteryForm !== null && (
+          <form className="flex flex-wrap items-end gap-3 rounded-2xl bg-panel-2 p-4" onSubmit={(e) => { e.preventDefault(); go('mystery_start', { title: mysteryForm }).then(() => setMysteryForm(null)); }}>
+            <label className="grid gap-1 grow text-sm">What's the mystery? Shown on the big screen (optional)
+              <input className="field" maxLength={60} value={mysteryForm} onChange={(e) => setMysteryForm(e.target.value)} placeholder="e.g. Guess the movie from the emoji" autoFocus /></label>
+            <button className="btn min-h-12" disabled={busy}>Start it</button>
+            <button type="button" className="btn btn-ghost min-h-12" onClick={() => setMysteryForm(null)}>Cancel</button>
+          </form>
+        )}
+        {phase !== 'final' && phase !== 'closed' && (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm border-t border-panel-2 pt-3">
+            <span className="flex items-center gap-2">Who judges the next spin?
+              <span className="inline-flex rounded-full bg-panel-2 p-1">
+                {[false, true].map((v) => (
+                  <button key={String(v)} className={`rounded-full px-4 py-1.5 font-bold ${nextHost === v ? 'bg-paper text-dusk' : 'text-muted'}`} disabled={busy}
+                    onClick={() => nextHost !== v && act(() => api(`/api/events/${code}/host/settings`, { method: 'PUT', json: { host_judges_next: v } }))}>
+                    {v ? 'Me' : 'AI'}</button>
+                ))}
+              </span>
+            </span>
+            {round && !round.revealed && (
+              <span className="flex items-center gap-2">This spin is judged by {round.judgeMode === 'host' ? 'you' : 'the AI'}.
+                <button className="underline" disabled={busy} onClick={() => go(round.judgeMode === 'host' ? 'judge_ai' : 'judge_host')}>
+                  {round.judgeMode === 'host' ? 'Let the AI judge it' : 'Judge it myself'}</button>
+              </span>
+            )}
+          </div>
+        )}
       </section>
+      )}
 
       {attention.length > 0 && (
         <Panel title="Needs your attention">
@@ -173,7 +214,11 @@ export function HostDashboard() {
 
       {round && (
         <Panel title={round.roundNo === 1 ? `Images for scene ${round.seq}: ${round.title}` : `Images for ${round.title}`}>
-          {turnSubs.length ? <EntryList subs={turnSubs} code={code} act={act} /> : <p className="text-muted">No images yet.</p>}
+          {round.judgeMode === 'host' && <p className="text-muted">Tap an image to see it full size, then type a score out of 100. You can change a score until you show the scores.</p>}
+          {round.roundNo === 1 && round.sceneId && round.judgeMode === 'host' && (
+            <figure className="flex items-center gap-3"><img src={`/bank/${round.sceneId}-thumb.webp`} alt="The original scene" className="w-28 rounded-lg" /><figcaption className="text-sm text-muted">The original scene</figcaption></figure>)}
+          {round.roundNo === 2 && round.judgeMode === 'host' && <p className="font-bold">The movie: {round.concepts.join(' + ')}</p>}
+          {turnSubs.length ? <EntryList subs={turnSubs} code={code} act={act} scoring /> : <p className="text-muted">No images yet.</p>}
         </Panel>
       )}
 
@@ -192,7 +237,7 @@ const FLAG_LABEL: Record<string, string> = {
   embedded_text: 'Has text aimed at the AI judge', host_cleared: 'Cleared by you',
 };
 
-function EntryList({ subs, code, act }: { subs: any[]; code: string; act: Act }) {
+function EntryList({ subs, code, act, scoring = false }: { subs: any[]; code: string; act: Act; scoring?: boolean }) {
   const post = (id: string, a: string) => act(() => api(`/api/events/${code}/host/submissions/${id}/${a}`, { method: 'POST' }));
   return (
     <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -207,10 +252,74 @@ function EntryList({ subs, code, act }: { subs: any[]; code: string; act: Act })
               {s.status === 'needs_review' && <><button className="underline" onClick={() => post(s.id, 'approve')}>Approve</button><button className="underline text-sub-r" onClick={() => post(s.id, 'reject')}>Reject</button></>}
               {['failed', 'paused_quota'].includes(s.status) && <button className="underline" onClick={() => post(s.id, 'requeue')}>Retry judging</button>}
             </div>
+            {scoring && s.status !== 'superseded' && <ScoreInput key={`${s.id}-${s.score_total}`} sub={s} code={code} act={act} />}
           </div>
         </li>
       ))}
     </ul>
+  );
+}
+
+function ScoreInput({ sub, code, act }: { sub: any; code: string; act: Act }) {
+  const [v, setV] = useState(sub.score_total != null && sub.flags?.includes('host_scored') ? String(Number(sub.score_total)) : '');
+  const n = Number(v);
+  const ok = v.trim() !== '' && n >= 0 && n <= 100;
+  return (
+    <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (ok) act(() => api(`/api/events/${code}/host/submissions/${sub.id}/score`, { method: 'POST', json: { score: n } })); }}>
+      <input className="field !min-h-9 !py-1 !w-20 tabular-nums" inputMode="decimal" aria-label={`Your score for ${sub.team}`} placeholder="0–100" value={v} onChange={(e) => setV(e.target.value.replace(/[^\d.]/g, ''))} />
+      <button className="underline font-bold" disabled={!ok}>{sub.flags?.includes('host_scored') ? 'Update' : sub.status === 'scored' ? 'Change score' : 'Give score'}</button>
+    </form>
+  );
+}
+
+function MysteryPanel({ code, name, mystery, teams, act, busy, msg, onFinish }: {
+  code: string; name: string; mystery: NonNullable<StateResponse['mystery']>; teams: any[]; act: Act; busy: boolean;
+  msg: { kind: 'error' | 'ok'; text: string } | null; onFinish: () => void;
+}) {
+  const [teamNo, setTeamNo] = useState('');
+  const [points, setPoints] = useState('10');
+  const team = teams.find((t) => String(t.team_no) === teamNo.trim());
+  const pts = Number(points);
+  const valid = !!team?.joined_at && Number.isInteger(pts) && pts !== 0 && Math.abs(pts) <= 1000;
+  const total = mystery.awards.reduce((a, x) => a + x.points, 0);
+  return (
+    <section className="mt-6 rounded-3xl bg-panel p-6 grid gap-5 sticky top-2 z-20 shadow-[0_10px_30px_rgba(10,6,30,.6)] ring-2 ring-sub-b">
+      <p className="text-muted">{name}</p>
+      <h1 className="text-5xl font-extrabold">Mystery round{mystery.title ? `: ${mystery.title}` : ''}</h1>
+      <p className="text-xl">Spins are paused and the big screen shows the Mystery screen. Give points by team number. Points go straight onto the leaderboard.</p>
+      {msg && <Notice kind={msg.kind}>{msg.text}</Notice>}
+      <form className="grid gap-3 sm:grid-cols-[8rem_1fr_auto] items-end" onSubmit={(e) => {
+        e.preventDefault(); if (!valid) return;
+        act(() => api(`/api/events/${code}/host/bonus`, { method: 'POST', json: { teamNo: Number(teamNo), points: pts } }), `${pts > 0 ? '+' : ''}${pts} to ${team.name}`)
+          .then((r) => { if (r) setTeamNo(''); });
+      }}>
+        <label className="grid gap-1 text-sm font-bold">Team number
+          <input className="field text-2xl tabular-nums" inputMode="numeric" value={teamNo} onChange={(e) => setTeamNo(e.target.value.replace(/\D/g, '').slice(0, 3))} autoFocus /></label>
+        <div className="grid gap-1 text-sm font-bold">Points
+          <div className="flex flex-wrap gap-2">
+            <input className="field text-2xl !w-28 tabular-nums" inputMode="numeric" value={points} onChange={(e) => setPoints(e.target.value.replace(/[^\d-]/g, '').slice(0, 5))} aria-label="Points" />
+            {[10, 25, 50, -10].map((q) => <button type="button" key={q} className={`btn btn-ghost !min-h-12 ${pts === q ? 'ring-2 ring-paper' : ''}`} onClick={() => setPoints(String(q))}>{q > 0 ? `+${q}` : q}</button>)}
+          </div>
+        </div>
+        <button className="btn text-xl min-h-14 px-8" disabled={busy || !valid}>Give points</button>
+        <p className="text-sm sm:col-span-3 min-h-5">{teamNo ? (team?.joined_at ? <>Team {team.team_no}: <b>{team.name}</b></> : <span className="text-warn">Team {teamNo} hasn't joined</span>) : <span className="text-muted">Type the team number they call out.</span>}</p>
+      </form>
+      {mystery.awards.length > 0 && (
+        <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {mystery.awards.map((a) => (
+            <li key={a.id} className="flex items-center justify-between gap-3 rounded-xl bg-panel-2 px-4 py-2">
+              <span className="truncate"><b className="tabular-nums mr-2">{a.teamNo}</b>{a.name}</span>
+              <span className="flex items-center gap-3"><b className={`display text-xl tabular-nums ${a.points > 0 ? 'text-sub-g' : 'text-sub-r'}`}>{a.points > 0 ? '+' : ''}{a.points}</b>
+                <button className="underline text-sm text-muted" disabled={busy} onClick={() => act(() => api(`/api/events/${code}/host/bonus/${a.id}`, { method: 'DELETE' }), `Removed ${a.points > 0 ? '+' : ''}${a.points} from ${a.name}`)}>Undo</button></span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap items-center gap-4">
+        <button className="btn text-xl min-h-16 px-8" disabled={busy} onClick={onFinish}>Finish Mystery round and resume</button>
+        <span className="text-muted">{mystery.awards.length} awards, {total > 0 ? '+' : ''}{total} points this round</span>
+      </div>
+    </section>
   );
 }
 
@@ -231,7 +340,7 @@ function Teams({ ov, code, act }: { ov: any; code: string; act: Act }) {
         ))}
       </ul>
       <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); act(() => api(`/api/events/${code}/host/teams`, { method: 'POST', json: { count } }), 'More team numbers are now free to pick.'); }}>
-        <label className="grid gap-1 text-sm">Total teams<input type="number" min={1} max={120} className="field w-32" value={count} onChange={(e) => setCount(Number(e.target.value))} /></label>
+        <label className="grid gap-1 text-sm">Total teams<input type="number" min={1} max={120} className="field !w-32" value={count} onChange={(e) => setCount(Number(e.target.value))} /></label>
         <button className="btn btn-ghost">Add team numbers</button>
       </form>
     </Panel>

@@ -40,7 +40,8 @@ export async function refreshLeaderboard(ctx: AppContext, eventId: string) {
   await ctx.db.batch([
     { text: `DELETE FROM leaderboard_entries l USING teams t WHERE l.team_id=t.id AND t.event_id=$1 AND t.disabled`, params: [eventId] },
     { text: `INSERT INTO leaderboard_entries(event_id,team_id,r1_score,r2_score,total,r2_submitted_at,updated_at)
-             SELECT t.event_id, t.id, x.r1, x.r2, coalesce(x.r1,0)+coalesce(x.r2,0), x.r2_at, now()
+             SELECT t.event_id, t.id, x.r1, x.r2, coalesce(x.r1,0)+coalesce(x.r2,0)
+                    + coalesce((SELECT sum(b.points) FROM bonus_points b WHERE b.team_id=t.id),0), x.r2_at, now()
              FROM teams t
              LEFT JOIN LATERAL (
                SELECT sum(s.score_total) FILTER (WHERE r.round_no=1) AS r1,
@@ -134,7 +135,9 @@ export async function processJob(ctx: AppContext, jobId: string): Promise<JobOut
     await ctx.db.batch([
       { text: `INSERT INTO evaluation_results(submission_id,job_id,provider,model,mode,criteria,total,feedback,raw_response,
                  input_tokens,output_tokens,neurons_est,latency_ms,is_published)
-               VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,true) ON CONFLICT DO NOTHING`,
+               SELECT $1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,true
+               WHERE NOT EXISTS (SELECT 1 FROM submissions WHERE id=$1 AND 'host_scored' = ANY(flags)) -- host's score wins
+               ON CONFLICT DO NOTHING`,
         params: [job.submission_id, jobId, provider.id, provider.model, result.mode, JSON.stringify(result.criteria), result.total,
           result.feedback, result.rawText, result.inputTokens, result.outputTokens, result.neurons, result.latencyMs] },
       { text: `UPDATE submissions s SET status=$3, flags=$4, score_total=er.total, scored_at=now()

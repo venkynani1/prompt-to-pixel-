@@ -19,7 +19,8 @@ export function Play() {
   if (!state?.me) return <Shell><Wordmark size="sm" /><div className="mt-16"><Notice kind={error ? 'error' : 'info'}>{error ?? 'Loading…'}</Notice></div></Shell>;
 
   const { event, me } = state;
-  const phase = event.phase;
+  const mystery = state.mystery;
+  const phase = mystery ? ('mystery' as const) : event.phase;
   const clockNow = Date.now() + offset;
   const st = round ? stageOf(round, animating ? now : clockNow) : null;
 
@@ -32,6 +33,20 @@ export function Play() {
       {error && <div className="mt-3"><Notice kind="error">{error}</Notice></div>}
 
       {!me.named && <NameTeam code={code} teamNo={me.teamNo} onDone={refresh} />}
+
+      {me.named && mystery && (() => {
+        const mine = mystery.awards.filter((a) => a.teamId === me.teamId).reduce((x, a) => x + a.points, 0);
+        return (
+          <section className="mt-10 grid gap-5">
+            <p className="display text-9xl font-extrabold text-sub-b leading-none" aria-hidden>?</p>
+            <h1 className="text-5xl font-extrabold">Mystery round</h1>
+            {mystery.title && <p className="text-2xl font-bold">{mystery.title}</p>}
+            <p className="text-muted">Eyes on the big screen. The host gives points by team number, so remember yours: <b className="text-paper">Team {me.teamNo}</b>.</p>
+            {mine !== 0 && <p className="text-xl">This mystery round: <b className={`display text-4xl ${mine > 0 ? 'text-sub-g' : 'text-sub-r'}`}>{mine > 0 ? '+' : ''}{mine}</b></p>}
+            <p className="text-xl">Total <b className="display text-3xl">{me.total.toFixed(0)}</b>{me.rank ? <span className="text-muted">, place #{me.rank}</span> : null}</p>
+          </section>
+        );
+      })()}
 
       {me.named && phase === 'lobby' && (
         <section className="mt-10 grid gap-4">

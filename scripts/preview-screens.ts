@@ -101,6 +101,16 @@ async function main() {
   await screen.reload({ waitUntil: 'networkidle0' }); await sleep(2500); await shot(screen, '14-screen-results');
   await hostPage.reload({ waitUntil: 'networkidle0' }); await sleep(1500); await shot(hostPage, '23-host-results');
 
+  // Mystery round: spins paused, points by team number
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'mystery_start', title: 'Guess the movie from the emoji' } });
+  for (const [no, pts] of [[3, 50], [8, 25], [5, -10], [2, 25]] as const) await host.call(`/api/events/${code}/host/bonus`, { method: 'POST', json: { teamNo: no, points: pts } });
+  await screen.reload({ waitUntil: 'networkidle0' }); await sleep(2500); await shot(screen, '18-screen-mystery');
+  await hostPage.reload({ waitUntil: 'networkidle0' }); await sleep(1500); await shot(hostPage, '24-host-mystery');
+  await phone.reload({ waitUntil: 'networkidle0' }); await shot(phone, '06-phone-mystery');
+  await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'mystery_end' } });
+  // Round 2 is judged by the host
+  await host.call(`/api/events/${code}/host/settings`, { method: 'PUT', json: { host_judges_next: true } });
+
   // Round 2
   await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'spin2' } });
   await sleep(6500); await screen.bringToFront(); await screen.screenshot({ path: `${OUT}/15-screen-reels.png` }); console.log('shot 15-screen-reels');
@@ -109,6 +119,10 @@ async function main() {
   for (let i = 0; i < teams.length; i++) { const f = new FormData(); const a = await art(30 + i); for (const k of ['full', 'judge', 'thumb']) f.set(k, new Blob([a]), 'a.webp'); await teams[i].call(`/api/events/${code}/submit`, { method: 'POST', body: f }); }
   await sleep(3000);
   await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'end' } });
+  await hostPage.reload({ waitUntil: 'networkidle0' }); await sleep(1500); await shot(hostPage, '25-host-judging', true);
+  const ov2 = await host.call(`/api/events/${code}/host/overview`);
+  for (const [i, sub] of ov2.submissions.filter((x: any) => x.status === 'host_judging').entries())
+    await host.call(`/api/events/${code}/host/submissions/${sub.id}/score`, { method: 'POST', json: { score: 50 + i * 6 } });
   await host.call(`/api/events/${code}/host/action`, { method: 'POST', json: { action: 'final' } });
   await screen.reload({ waitUntil: 'networkidle0' }); await sleep(3800); await shot(screen, '17-screen-final');
   await phone.reload({ waitUntil: 'networkidle0' }); await shot(phone, '05-phone-final');

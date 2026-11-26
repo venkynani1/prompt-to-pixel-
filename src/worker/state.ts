@@ -27,7 +27,7 @@ export interface Viewer { teamTokenHash: string | null; hostTokenHash: string | 
 
 export async function loadEventHead(ctx: AppContext, code: string, v: Viewer) {
   const rows = await ctx.db.query<any>(
-    `SELECT e.id, e.code, e.name, e.phase, e.registration_open, e.state_version::int AS version, now() AS server_now,
+    `SELECT e.id, e.code, e.name, e.phase, e.registration_open, e.mystery_at, e.mystery_title, e.state_version::int AS version, now() AS server_now,
             (e.projector_key = $2) AS is_projector,
             (SELECT a.team_id FROM auth_sessions a JOIN teams t ON t.id=a.team_id
                WHERE a.token_hash=$3 AND a.event_id=e.id AND a.role='team' AND NOT a.revoked AND a.expires_at>now() AND NOT t.disabled) AS my_team_id,
@@ -45,7 +45,9 @@ const LEADERBOARD_SQL = `
   SELECT t.id AS team_id, t.name,
          sum(s.score_total) FILTER (WHERE r.round_no=1)::float AS r1,
          sum(s.score_total) FILTER (WHERE r.round_no=2)::float AS r2,
-         coalesce(sum(s.score_total) FILTER (WHERE r.id IS NOT NULL),0)::float AS total,
+         (SELECT coalesce(sum(b.points),0) FROM bonus_points b WHERE b.team_id=t.id)::float AS bonus,
+         (coalesce(sum(s.score_total) FILTER (WHERE r.id IS NOT NULL),0)
+           + (SELECT coalesce(sum(b.points),0) FROM bonus_points b WHERE b.team_id=t.id))::float AS total,
          max(s.submitted_at) FILTER (WHERE r.id IS NOT NULL) AS last_at
   FROM teams t
   LEFT JOIN submissions s ON s.team_id=t.id AND s.status='scored'
@@ -55,7 +57,7 @@ const LEADERBOARD_SQL = `
 
 export function rankRows(rows: any[]): LeaderRow[] {
   const sorted = rows
-    .map((b) => ({ teamId: b.team_id, name: b.name, r1: b.r1 === null ? null : Number(b.r1), r2: b.r2 === null ? null : Number(b.r2), total: Number(b.total), rank: 0 }))
+    .map((b) => ({ teamId: b.team_id, name: b.name, r1: b.r1 === null ? null : Number(b.r1), r2: b.r2 === null ? null : Number(b.r2), bonus: Number(b.bonus ?? 0), total: Number(b.total), rank: 0 }))
     .sort((a, b) => b.total - a.total || (b.r2 ?? 0) - (a.r2 ?? 0) || a.name.localeCompare(b.name));
   sorted.forEach((row, i, arr) => { // shared rank only when the total AND the Round 2 tiebreak are equal
     const p = arr[i - 1];
@@ -77,11 +79,11 @@ export async function buildState(ctx: AppContext, code: string, v: Viewer, ifNon
   const basePoll = pollInterval(phase, role, phase.endsWith('_judging'), reqToday, head.request_daily_cap);
   if (ifNoneMatch && ifNoneMatch === etag) return { status: 304, etag, pollMs: basePoll };
 
-  const [turnRows, progRows, boardRows, teamRows, meRows] = await ctx.db.batch([
+  const [turnRows, progRows, boardRows, teamRows, meRows, awardRows] = await ctx.db.batch([
     { text: `SELECT r.* FROM round_configs r, events e WHERE e.id=$1 AND r.id = ${CURRENT_TURN}`, params: [head.id] },
     { text: `SELECT count(*) FILTER (WHERE s.status<>'superseded')::int AS submitted,
                     count(*) FILTER (WHERE s.status='scored')::int AS scored,
-                    count(*) FILTER (WHERE s.status IN ('queued','evaluating','paused_quota'))::int AS pending,
+                    count(*) FILTER (WHERE s.status IN ('queued','evaluating','paused_quota','host_judging'))::int AS pending,
                     count(*) FILTER (WHERE s.status='failed')::int AS failed
              FROM submissions s, events e WHERE e.id=$1 AND s.round_id = ${CURRENT_TURN}`, params: [head.id] },
     { text: LEADERBOARD_SQL, params: [head.id] },
@@ -96,21 +98,29 @@ export async function buildState(ctx: AppContext, code: string, v: Viewer, ifNon
              LEFT JOIN round_configs r ON r.id=s.round_id
              LEFT JOIN evaluation_results er ON er.submission_id=s.id AND er.is_published
              WHERE t.id=$1`, params: [head.my_team_id ?? '00000000-0000-0000-0000-000000000000'] },
+    { text: head.mystery_at
+      ? `SELECT b.id, b.points, b.note, t.team_no, t.name, t.id AS team_id FROM bonus_points b JOIN teams t ON t.id=b.team_id
+         WHERE b.event_id=$1 AND b.created_at >= $2 ORDER BY b.created_at DESC LIMIT 60`
+      : `SELECT 1 WHERE false AND $1::uuid IS NOT NULL AND $2::timestamptz IS NULL`, params: [head.id, head.mystery_at ?? null] },
   ]);
 
   const r = turnRows[0];
   const board = rankRows(boardRows);
-  const anyRevealed = board.some((b) => b.r1 !== null || b.r2 !== null) || !!r?.revealed_at;
+  const anyRevealed = board.some((b) => b.r1 !== null || b.r2 !== null || b.bonus !== 0) || !!r?.revealed_at;
   const iso = (d: any) => (d ? new Date(d).toISOString() : '');
   const body: StateResponse = {
     version: head.version,
     serverNow: new Date(head.server_now).toISOString(),
     pollMs: basePoll,
     event: { code: head.code, name: head.name, phase, registrationOpen: head.registration_open, teamCount: head.team_count },
+    mystery: head.mystery_at ? {
+      title: head.mystery_title, since: iso(head.mystery_at),
+      awards: awardRows.map((a: any) => ({ id: a.id, teamId: a.team_id, teamNo: a.team_no, name: a.name, points: Number(a.points), note: a.note })),
+    } : null,
     round: r ? {
       turnId: r.id, roundNo: r.round_no, seq: r.seq, title: r.title, brief: r.brief, durationSec: r.duration_sec,
       spinAt: iso(r.spin_at), previewFrom: iso(r.preview_from), previewUntil: iso(r.preview_until), deadlineAt: iso(r.deadline_at),
-      sceneId: r.bank_item, concepts: r.concepts ?? [], revealed: !!r.revealed_at,
+      sceneId: r.bank_item, concepts: r.concepts ?? [], revealed: !!r.revealed_at, judgeMode: r.judge_mode ?? 'ai',
     } : null,
     progress: r ? progRows[0] as any : null,
     leaderboard: anyRevealed ? board : null,
@@ -124,7 +134,7 @@ export async function buildState(ctx: AppContext, code: string, v: Viewer, ifNon
       total: mine?.total ?? 0, rank: anyRevealed ? mine?.rank ?? null : null,
       current: m.id ? {
         id: m.id, turnId: m.round_id, roundNo: m.round_no,
-        status: m.status === 'needs_review' ? 'queued' : m.status, // review flags are host-only
+        status: m.status === 'needs_review' || m.status === 'host_judging' ? 'queued' : m.status, // review flags are host-only
         thumbUrl: `/api/img/${m.thumb_image_id}`,
         score: m.revealed && m.status === 'scored' ? Number(m.score_total) : null,
         criteria: m.revealed && m.status === 'scored' ? m.criteria : null,

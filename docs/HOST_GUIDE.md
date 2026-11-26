@@ -18,7 +18,20 @@ Everything happens in your browser. No codes, no tokens.
 | **Go to Round 2: Movie Mashup** (any time) | Three reels pick a genre, a hero and a setting | Design that movie's poster, drop it |
 | **Show the scores** → **Show final standings** | Podium (winner revealed last) | Final place |
 
-Scores add up across every spin. Round 2 breaks ties.
+Scores add up across every spin and every Mystery round. Round 2 breaks ties.
+
+## Judging it yourself (any spin, either round)
+- Under the big button: **Who judges the next spin? AI / Me**. Pick **Me** before you spin.
+- Changed your mind after the spin started? **Judge it myself** (or **Let the AI judge it**) switches the current spin. Images the AI already scored keep their score.
+- Each image in the list has a score box (0–100): type a number → **Give score**. You can change it until you press **Show the scores**.
+- You can also overwrite any AI score with **Change score**. Your score always wins, even if the AI finishes later.
+- Spins you judge yourself use no AI allowance — handy for an extra spin when the allowance is low.
+
+## Mystery round
+- **Start Mystery round** (any time a spin isn't running). Optionally type what it is, e.g. "Guess the movie from the emoji" — it shows on the big screen.
+- Spinning is paused. The big screen and phones show the Mystery screen with the standings.
+- Type the **team number** + **points** (+10, +25, +50, −10 or any number) → **Give points**. Each award pops up on the big screen. Wrong team? **Undo**.
+- **Finish Mystery round and resume** → back to where you were. The points stay on the leaderboard.
 
 ## If something goes wrong
 - **Needs your attention** appears at the top of the console only when needed: an image that is the original scene itself, two teams with the same file, text aimed at the AI, or a failed judgement → **Approve**, **Reject** or **Retry judging**.
