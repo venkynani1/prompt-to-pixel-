@@ -6,6 +6,8 @@
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  // keep variables added in the Cloudflare dashboard when GitHub pushes redeploy the Worker
+  "keep_vars": true,
 
   // Always build the React app before deploying (Workers Builds may skip the dashboard build command)
   "build": { "command": "npm run build" },
