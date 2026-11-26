@@ -260,8 +260,10 @@ describe('integrity rules', () => {
 
   it('a re-upload replaces the earlier one and the per-spin limit holds', async () => {
     const h = await makeHarness();
-    const { code, a } = await oneSubmission(h);
+    const { host, code, a } = await oneSubmission(h);
     await h.drain();
+    expect((await a.json(`/api/events/${code}/submit`, { method: 'POST', body: await submitForm(await webp('#ff1100')) })).status).toBe(429); // default: 1 per spin
+    await host.json(`/api/events/${code}/host/settings`, { method: 'PUT', json: { max_submissions_per_round: 2 } });
     await a.json(`/api/events/${code}/submit`, { method: 'POST', body: await submitForm(await webp('#ff1100')) });
     expect((await a.json(`/api/events/${code}/submit`, { method: 'POST', body: await submitForm(await webp('#ff2200')) })).status).toBe(429);
     await h.drain();

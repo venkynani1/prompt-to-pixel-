@@ -375,7 +375,7 @@ export function createApp(getCtx: (env: any) => AppContext, opts: { adminToken: 
       r1_mode: z.enum(['auto', 'multi-image', 'composite', 'reference-description']).optional(),
       eval_concurrency: z.number().int().min(1).max(10).optional(),
       max_attempts: z.number().int().min(1).max(10).optional(),
-      ai_neuron_daily_cap: z.number().int().min(0).max(10000).optional(),      // can never exceed the free allocation
+      ai_neuron_daily_cap: z.number().int().min(0).max(10000).optional(),      // can never exceed the free allocation (10,000)
       request_daily_cap: z.number().int().min(1000).max(100000).optional(),
       max_submissions_per_round: z.number().int().min(1).max(5).optional(),
       r1_preview_sec: z.number().int().min(3).max(30).optional(),
