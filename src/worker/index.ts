@@ -12,6 +12,7 @@ const app = createApp((env: Env) => contextFromEnv(env), {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    if (url.pathname === '/api/health') return health(env);
     if (url.pathname.startsWith('/api/')) return app.fetch(request, env, ctx);
     return env.ASSETS.fetch(request);
   },
@@ -38,3 +39,25 @@ export default {
     ctx.waitUntil(reconcile(contextFromEnv(env)).then((r) => console.log('reconcile', JSON.stringify(r))));
   },
 } satisfies ExportedHandler<Env, QueueMessageBody>;
+
+/** Setup diagnostics that never reveal secret values. */
+async function health(env: Env): Promise<Response> {
+  const out = (status: number, body: object) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
+  const raw = env.DATABASE_URL;
+  if (!raw) return out(500, { ok: false, problem: 'DATABASE_URL secret is not set on this Worker (Settings → Variables and Secrets), or it was added without clicking Deploy.' });
+  const v = raw.trim();
+  if (/^["']/.test(v)) return out(500, { ok: false, problem: 'DATABASE_URL starts with a quote mark. Paste only the value, without quotes.' });
+  if (/^[A-Z_]+=/.test(v)) return out(500, { ok: false, problem: 'DATABASE_URL includes the variable name (e.g. NEON_DATABASE_URL=). Paste only the part starting with postgresql://' });
+  if (!/^postgres(ql)?:\/\//.test(v)) return out(500, { ok: false, problem: 'DATABASE_URL must start with postgresql://' });
+  let host = '';
+  try { host = new URL(v).hostname; } catch { return out(500, { ok: false, problem: 'DATABASE_URL is not a valid connection string (copy it again).' }); }
+  try {
+    const c = contextFromEnv(env);
+    const [{ n }] = await c.db.query<{ n: number }>(`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('events','teams','submissions','evaluation_jobs')`);
+    if (n < 4) return out(500, { ok: false, problem: 'Connected, but the tables are missing in this database. Run migrations/0001_init.sql in the Neon SQL editor.', host });
+    return out(200, { ok: true, storage: c.storageBackend, capabilities: c.capabilities, dbHost: host.replace(/^([^.]{6})[^.]*/, '$1…'), adminTokenSet: !!env.ADMIN_TOKEN });
+  } catch (e) {
+    const msg = String((e as Error)?.message ?? e).replace(/postgres(ql)?:\/\/\S+/g, '[url]').replace(/password[^,;]*/gi, 'password…').slice(0, 200);
+    return out(500, { ok: false, problem: `Cannot query the database: ${msg}`, dbHost: host.replace(/^([^.]{6})[^.]*/, '$1…') });
+  }
+}
