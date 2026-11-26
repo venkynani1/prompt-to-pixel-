@@ -6,6 +6,9 @@
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+
+  // Always build the React app before deploying (Workers Builds may skip the dashboard build command)
+  "build": { "command": "npm run build" },
   "preview_urls": false,
 
   // React build served as static assets (free, unlimited requests). Only /api/* runs the Worker.
